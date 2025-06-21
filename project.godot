@@ -18,7 +18,6 @@ config/icon="res://icon.png"
 [autoload]
 
 DebugMonitor="*res://scenes/debug_monitor.tscn"
-TestLog="*res://scenes/test_log.tscn"
 Global="*res://scenes/global.tscn"
 
 [display]
