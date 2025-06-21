@@ -1,6 +1,7 @@
-[gd_scene load_steps=5 format=3 uid="uid://dc14t4enyvxws"]
+[gd_scene load_steps=6 format=3 uid="uid://dc14t4enyvxws"]
 
 [ext_resource type="FontFile" uid="uid://bjxfdfsx2dcfy" path="res://BIZUDPGothic-Bold.ttf" id="1_2pa2y"]
+[ext_resource type="Script" path="res://menu.gd" id="1_my17a"]
 [ext_resource type="Texture2D" uid="uid://c8a1aqjc7st33" path="res://icons8-再生-100.png" id="2_gm5ji"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4qimm"]
@@ -15,6 +16,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+script = ExtResource("1_my17a")
 
 [node name="BG" type="ColorRect" parent="."]
 layout_mode = 1
@@ -46,3 +48,5 @@ theme_override_styles/normal = SubResource("StyleBoxFlat_4qimm")
 theme_override_styles/hover = SubResource("StyleBoxFlat_01ysy")
 icon = ExtResource("2_gm5ji")
 icon_alignment = 1
+
+[connection signal="pressed" from="Button" to="." method="_on_button_pressed"]
