@@ -1,6 +1,33 @@
-[gd_scene load_steps=2 format=3 uid="uid://c4sp4724srrge"]
+[gd_scene load_steps=4 format=3 uid="uid://c4sp4724srrge"]
 
 [ext_resource type="Script" path="res://scripts/debug_monitor.gd" id="1_7a78e"]
+[ext_resource type="FontFile" uid="uid://b743lj2q07ymm" path="res://assets/fonts/BIZUDPGothic-Regular.ttf" id="2_mmpmr"]
+[ext_resource type="FontFile" uid="uid://bjxfdfsx2dcfy" path="res://assets/fonts/BIZUDPGothic-Bold.ttf" id="3_a2441"]
 
 [node name="DebugMonitor" type="CanvasLayer"]
 script = ExtResource("1_7a78e")
+
+[node name="InfoLabel" type="Label" parent="."]
+offset_right = 40.0
+offset_bottom = 23.0
+theme_override_fonts/font = ExtResource("2_mmpmr")
+theme_override_font_sizes/font_size = 24
+
+[node name="LogLabel" type="RichTextLabel" parent="."]
+custom_minimum_size = Vector2(500, 300)
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_top = -40.0
+offset_right = 1025.0
+grow_vertical = 0
+theme_override_fonts/normal_font = ExtResource("2_mmpmr")
+theme_override_fonts/bold_font = ExtResource("3_a2441")
+theme_override_font_sizes/normal_font_size = 24
+theme_override_font_sizes/bold_font_size = 24
+theme_override_font_sizes/italics_font_size = 24
+theme_override_font_sizes/bold_italics_font_size = 24
+theme_override_font_sizes/mono_font_size = 24
+text = "aiueo
+"
+scroll_following = true
