@@ -2,13 +2,13 @@
 
 importer="font_data_dynamic"
 type="FontFile"
-uid="uid://b743lj2q07ymm"
-path="res://.godot/imported/BIZUDPGothic-Regular.ttf-a779d5a83abd48f34ad83aae33976cde.fontdata"
+uid="uid://bjxfdfsx2dcfy"
+path="res://.godot/imported/BIZUDPGothic-Bold.ttf-05d382e7517fd430d81f24ad21b3667e.fontdata"
 
 [deps]
 
-source_file="res://BIZUDPGothic-Regular.ttf"
-dest_files=["res://.godot/imported/BIZUDPGothic-Regular.ttf-a779d5a83abd48f34ad83aae33976cde.fontdata"]
+source_file="res://assets/fonts/BIZUDPGothic-Bold.ttf"
+dest_files=["res://.godot/imported/BIZUDPGothic-Bold.ttf-05d382e7517fd430d81f24ad21b3667e.fontdata"]
 
 [params]
 
