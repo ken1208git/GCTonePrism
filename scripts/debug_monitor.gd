@@ -3,6 +3,13 @@ extends CanvasLayer
 # このシーンの中にあるLabelノードへの参照
 @onready var info_label = $InfoLabel # FPSなどを表示するラベル
 @onready var log_label = $LogLabel   # ログを表示するRichTextLabel
+@onready var version_label = $VersionLabel # バージョン情報を表示するラベル
+
+# このノードが準備できたときに一度だけ呼ばれる
+func _ready():
+    # バージョンラベルのテキストを設定する
+    # Global.APP_VERSIONはシングルトンで定義した定数
+    version_label.text = "v" + Global.APP_VERSION
 
 func _process(_delta):
     # Globalスクリプトのis_debug_mode変数を参照する

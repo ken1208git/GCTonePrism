@@ -1,5 +1,11 @@
 extends Node
 
+# --- アプリケーション情報 ---
+
+# ランチャーのバージョン番号。セマンティックバージョニング（Major.Minor.Patch-Identifier.Build）に従う。
+const APP_VERSION = "0.1.0-dev.1"
+
+
 # --- グローバル変数 ---
 
 # デバッグモードの状態を管理する。初期値はオフ(false)。
