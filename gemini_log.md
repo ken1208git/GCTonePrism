@@ -196,3 +196,21 @@
 - **実装内容:**
     - `scripts/debug_monitor.gd`の`_process`関数から、`print("デバッグモニター更新中。ログの行数:", Global.log_history.size())`の行を削除。
 - **結果:** デバッグモニターの動作に影響なく、コンソール出力が整理された。
+
+### 3. デバッグモニターのログ表示に関する問題 (v0.1.0-dev.3)
+
+- **発端:** ユーザーからデバッグモニターのログ表示について、以下の2点の要望があった。
+    1.  ログ表示を下から上に積層するようにしたい。
+    2.  テキストがラベルの下側から出てくるようにしたい。
+- **実装と問題発生の経緯:**
+    - **ログ積層方向の変更:**
+        - 最初の試みで `Array.reversed()` を使用したが、GDScriptには存在しないため `Invalid call. Nonexistent function 'reversed' in base 'Array'.` エラーが発生。
+        - `duplicate()` と `reverse()` を組み合わせることで修正を試みた。
+        - この際、改行コードを誤って `"/n"` と記述してしまい、これも修正した。
+    - **テキスト垂直方向の配置変更:**
+        - `RichTextLabel` の `vertical_alignment` プロパティを `VERTICAL_ALIGNMENT_BOTTOM` に設定しようとした。
+        - `VERTICAL_ALIGNMENT_BOTTOM` が直接認識されず `Invalid set index 'vertical_alignment' (on base: 'RichTextLabel') with value of type 'int'.` エラーが発生。
+        - `TextServer.VERTICAL_ALIGNMENT_BOTTOM` を試したが `Parser Error: Cannot find member "VERTICAL_ALIGNMENT_BOTTOM" in base "TextServer".` エラーが発生。
+        - `Control.VERTICAL_ALIGNMENT_BOTTOM` を試したが `Parser Error: Cannot find member "VERTICAL_ALIGNMENT_BOTTOM" in base "Control".` エラーが発生。
+        - `RichTextLabel.VERTICAL_ALIGNMENT_BOTTOM` を試したが、ユーザーがツール実行をキャンセルした。しかし、この形式が正しい可能性が高いと判断。
+- **現在の状況:** 上記の修正を試みたにも関わらず、ユーザーからは「まだうまくできていない」との報告があり、問題が解決していない。引き続き原因の調査と修正が必要。

@@ -3,10 +3,15 @@ extends Node
 # --- アプリケーション情報 ---
 
 # ランチャーのバージョン番号。セマンティックバージョニング（Major.Minor.Patch-Identifier.Build）に従う。
-const APP_VERSION = "0.1.0-dev.1"
+const APP_VERSION = "0.1.0-dev.3"
 
 
 # --- グローバル変数 ---
+
+# 起動中のゲームのプロセスID。ゲームが起動していない場合は-1。
+var current_game_pid: int = -1
+# 現在UIで選択されているゲームのデータ（game.jsonの内容）。何も選択されていない場合は空のDictionary。
+var current_selected_game_data: Dictionary = {}
 
 # デバッグモードの状態を管理する。初期値はオフ(false)。
 var is_debug_mode = false
@@ -54,3 +59,16 @@ func log_message(message):
     # 古いログを削除
     if log_history.size() > MAX_LOG_LINES:
         log_history.pop_front()
+
+# 新しいログメッセージを追加する関数
+func add_log(message: String) -> void:
+    log_history.append(message)
+    
+    # もし、ログの行数が最大値を超えたら、一番古いログ（配列の先頭）を削除する
+    if log_history.size() > MAX_LOG_LINES:
+        log_history.pop_front()
+
+# ログ履歴を文字列として取得する関数
+func get_log_history() -> String:
+    # 配列の要素を、改行文字(\n)で連結して、一つの文字列にして返す
+    return "\n".join(log_history)

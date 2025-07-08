@@ -2,14 +2,7 @@ extends CanvasLayer
 
 # このシーンの中にあるLabelノードへの参照
 @onready var info_label = $InfoLabel # FPSなどを表示するラベル
-@onready var log_label = $LogLabel   # ログを表示するRichTextLabel
-@onready var version_label = $VersionLabel # バージョン情報を表示するラベル
-
-# このノードが準備できたときに一度だけ呼ばれる
-func _ready():
-    # バージョンラベルのテキストを設定する
-    # Global.APP_VERSIONはシングルトンで定義した定数
-    version_label.text = "GCTonePrism v" + Global.APP_VERSION
+@onready var log_label = $VBoxContainer/LogLabel   # ログを表示するRichTextLabel
 
 func _process(_delta):
     # Globalスクリプトのis_debug_mode変数を参照する
@@ -20,8 +13,10 @@ func _process(_delta):
         # FPSやメモリ情報を取得して、Labelのテキストを更新する
         var fps = Performance.get_monitor(Performance.TIME_FPS)
         var mem = Performance.get_monitor(Performance.MEMORY_STATIC) / 1024.0 / 1024.0
-        info_label.text = "FPS: %d\nMemory: %.2f MB" % [fps, mem]
-       # Globalのログ履歴を、改行(\n)で連結して一つの文字列にする
+        
+        # バージョン情報とパフォーマンス情報を結合して表示
+        info_label.text = "GCTonePrism v%s\nFPS: %d\nMemory: %.2f MB" % [Global.APP_VERSION, fps, mem]
+        # Globalのログ履歴を、改行(\n)で連結して一つの文字列にする
         log_label.text = "\n".join(Global.log_history)
         
     else:
