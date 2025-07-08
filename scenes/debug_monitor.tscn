@@ -8,18 +8,22 @@
 script = ExtResource("1_7a78e")
 
 [node name="InfoLabel" type="Label" parent="."]
-offset_right = 40.0
-offset_bottom = 23.0
+offset_left = 1788.0
+offset_right = 1920.0
+offset_bottom = 81.0
 theme_override_fonts/font = ExtResource("2_mmpmr")
 theme_override_font_sizes/font_size = 24
+text = "
+CPU:00%
+GPU:00%
+MEM:00%"
 
 [node name="VersionLabel" type="Label" parent="."]
-offset_top = 30.0
-offset_right = 40.0
-offset_bottom = 53.0
+offset_right = 330.0
+offset_bottom = 25.0
 theme_override_fonts/font = ExtResource("2_mmpmr")
 theme_override_font_sizes/font_size = 24
-text = "v0.0.0-dev"
+text = "GCTonePrism v0.0.0-dev"
 
 [node name="LogLabel" type="RichTextLabel" parent="."]
 custom_minimum_size = Vector2(500, 300)
@@ -36,7 +40,4 @@ theme_override_font_sizes/bold_font_size = 24
 theme_override_font_sizes/italics_font_size = 24
 theme_override_font_sizes/bold_italics_font_size = 24
 theme_override_font_sizes/mono_font_size = 24
-text = "aiueo
-
-"
 scroll_following = true

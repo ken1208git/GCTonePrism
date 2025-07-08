@@ -9,7 +9,7 @@ extends CanvasLayer
 func _ready():
     # バージョンラベルのテキストを設定する
     # Global.APP_VERSIONはシングルトンで定義した定数
-    version_label.text = "v" + Global.APP_VERSION
+    version_label.text = "GCTonePrism v" + Global.APP_VERSION
 
 func _process(_delta):
     # Globalスクリプトのis_debug_mode変数を参照する
@@ -23,7 +23,7 @@ func _process(_delta):
         info_label.text = "FPS: %d\nMemory: %.2f MB" % [fps, mem]
        # Globalのログ履歴を、改行(\n)で連結して一つの文字列にする
         log_label.text = "\n".join(Global.log_history)
-        print("デバッグモニター更新中。ログの行数:", Global.log_history.size())
+        
     else:
         # もしオフなら、自身を非表示にする
         self.hide()
