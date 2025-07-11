@@ -15,9 +15,9 @@ text = "GCTonePrism v-.-.-
 FPS: --
 Memory: --.-- MB"
 
-[node name="LogPanel" type="PanelContainer" parent="."]
-offset_right = 40.0
-offset_bottom = 40.0
-
-[node name="LogLabel" type="RichTextLabel" parent="LogPanel"]
-layout_mode = 2
+[node name="LogLabel" type="RichTextLabel" parent="."]
+layout_direction = 1
+offset_left = -1.0
+offset_top = 780.0
+offset_right = 999.0
+offset_bottom = 1080.0

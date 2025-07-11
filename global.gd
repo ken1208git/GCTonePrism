@@ -3,7 +3,7 @@ extends Node
 # --- アプリケーション情報 ---
 
 # ランチャーのバージョン番号。セマンティックバージョニング（Major.Minor.Patch-Identifier.Build）に従う。
-const APP_VERSION = "0.1.0-dev.3"
+const APP_VERSION = "0.1.0-dev.4"
 
 
 # --- グローバル変数 ---
@@ -44,8 +44,6 @@ func _unhandled_input(_event):
             log_message("Debug Mode: ON")
         else:
             log_message("Debug Mode: OFF")
-    
-    # 他のデバッグ用ショートカットは、この下に追加していく
 
 
 # --- 自作のグローバル関数 ---

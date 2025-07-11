@@ -2,7 +2,8 @@ extends CanvasLayer
 
 # このシーンの中にあるLabelノードへの参照
 @onready var info_label = $InfoLabel # FPSなどを表示するラベル
-@onready var log_label = $VBoxContainer/LogLabel   # ログを表示するRichTextLabel
+@onready var log_label = $LogPanel/LogLabel   # ログを表示するRichTextLabel
+
 
 func _process(_delta):
     # Globalスクリプトのis_debug_mode変数を参照する
