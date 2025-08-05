@@ -11,20 +11,22 @@ config_version=5
 [application]
 
 config/name="ゲームセンターTONE Prism"
-run/main_scene="res://scenes/menu.tscn"
+run/main_scene="res://scenes/main/menu.tscn"
 config/features=PackedStringArray("4.2", "Forward Plus")
 config/icon="res://icon.png"
 
 [autoload]
 
-DebugMonitor="*res://scenes/debug_monitor.tscn"
-Global="*res://scenes/global.tscn"
+DebugMonitor="*res://scenes/tools/debug_monitor.tscn"
+Global="*res://scenes/system/global.tscn"
 
 [display]
 
 window/size/viewport_width=1920
 window/size/viewport_height=1080
 window/size/mode=3
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
 
 [input]
 
