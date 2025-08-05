@@ -1,20 +1,26 @@
+# GCTonePrismプロジェクト全体で共有される設定やデータを管理する、ただ一つの特別な場所。
+# Godotの「自動ロード」機能に登録することで、どこからでも `Global` という名前でアクセスできる。
 extends Node
 
 # --- アプリケーション情報 ---
 
 # ランチャーのバージョン番号。セマンティックバージョニング（Major.Minor.Patch-Identifier.Build）に従う。
-const APP_VERSION = "0.1.0-dev.4"
+# 新しい機能の開発や修正作業の区切りごとに、最後のdevナンバーを1つずつ上げていく。
+const APP_VERSION = "0.1.0-dev.5"
 
 
 # --- グローバル変数 ---
 
 # 起動中のゲームのプロセスID。ゲームが起動していない場合は-1。
 var current_game_pid: int = -1
-# 現在UIで選択されているゲームのデータ（game.jsonの内容）。何も選択されていない場合は空のDictionary。
+# 現在UIで選択されているゲームのデータ（launcher_info.jsonの内容）。何も選択されていない場合は空のDictionary。
 var current_selected_game_data: Dictionary = {}
 
 # デバッグモードの状態を管理する。初期値はオフ(false)。
 var is_debug_mode = false
+
+# launcher_config.json から読み込んだ設定データを保持するための変数。
+var launcher_config: Dictionary = {}
 
 
 # --- ログ機能 ---
@@ -29,6 +35,9 @@ const MAX_LOG_LINES = 20
 
 # このノードが起動したときに、一度だけ呼ばれる
 func _ready():
+    # 最初にランチャー設定ファイルを読み込む
+    load_launcher_config()
+    
     # 最初のログメッセージを記録
     log_message("GCTonePrism is Ready.")
     # インプットマップに"toggle_debug"を登録するように促す
@@ -47,6 +56,41 @@ func _unhandled_input(_event):
 
 
 # --- 自作のグローバル関数 ---
+
+# ランチャー全体の設定ファイル (launcher_config.json) を読み込むための関数
+func load_launcher_config():
+    # 設定ファイルのパスを定義する。"res://" は、このプロジェクトのルートフォルダを指す。
+    var config_path = "res://launcher_config.json"
+    
+    # ファイルが存在するかどうかを確認する
+    if not FileAccess.file_exists(config_path):
+        # もしファイルが見つからなければ、エラーログを残して処理を中断する
+        log_message("エラー: " + config_path + " が見つかりません。")
+        return
+
+    # ファイルを開いて、その内容を文字列としてすべて読み込む
+    var file = FileAccess.open(config_path, FileAccess.READ)
+    var content = file.get_as_text()
+    file.close()
+    
+    # 読み込んだJSON文字列を、Godotが理解できるデータ形式（Dictionary）に変換する準備
+    var json = JSON.new()
+    # 実際に変換を実行し、もしエラーがあればその情報を取得する
+    var error = json.parse(content)
+    
+    # 変換（パース）に失敗した場合
+    if error != OK:
+        log_message("エラー: launcher_config.json の解析に失敗しました。JSONの書式を確認してください。")
+        return
+    
+    # 変換に成功したら、その結果をグローバル変数の launcher_config に保存する
+    launcher_config = json.get_data()
+    
+    # ちゃんと読み込めたか、デバッグ用にコンソールに出力して確認する
+    log_message("launcher_config.json の読み込みに成功しました。")
+    log_message("  > ゲームディレクトリ: " + launcher_config.get("games_directory", "未設定"))
+    log_message("  > ゲーム表示順: " + str(launcher_config.get("games_order", [])))
+
 
 # カスタムログ関数
 func log_message(message):
