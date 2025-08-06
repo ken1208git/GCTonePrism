@@ -67,7 +67,7 @@
       "title": "ここにゲームの正式名称を入力",
       "description": "ここにゲームの紹介文を入力してください。",
       "developers": [
-        { "last_name": "姓", "first_name": "名", "grade": 47 }
+        { "last_name": "姓", "first_name": "名", "grade": XX }
       ],
       "release_year": 2025,
       "genre": ["ジャンル1", "ジャンル2"],
