@@ -1,5 +1,5 @@
 {
-  "games_directory": "../Games",
+  "games_directory": "res://../Games",
   "games_order": [
     "LaunchTest"
   ]

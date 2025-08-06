@@ -1,6 +1,6 @@
 [gd_scene load_steps=11 format=3 uid="uid://dc14t4enyvxws"]
 
-[ext_resource type="Script" path="res://scripts/menu.gd" id="1_grg70"]
+[ext_resource type="Script" path="res://scripts/main/menu.gd" id="1_grg70"]
 [ext_resource type="FontFile" uid="uid://dtvk1eu47wpx5" path="res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Heavy.otf" id="2_7hjxa"]
 [ext_resource type="FontFile" uid="uid://dw5huvnklu4no" path="res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Regular.otf" id="3_t88rp"]
 [ext_resource type="Texture2D" uid="uid://c8a1aqjc7st33" path="res://assets/images/play.png" id="4_1oq0c"]
@@ -88,6 +88,7 @@ custom_minimum_size = Vector2(450, 0)
 layout_mode = 2
 
 [node name="GameList" type="VBoxContainer" parent="SafeArea/MainLayout/GameListContainer"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="RightColumn" type="VBoxContainer" parent="SafeArea/MainLayout"]

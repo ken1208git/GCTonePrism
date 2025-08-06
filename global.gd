@@ -6,7 +6,7 @@ extends Node
 
 # ランチャーのバージョン番号。セマンティックバージョニング（Major.Minor.Patch-Identifier.Build）に従う。
 # 新しい機能の開発や修正作業の区切りごとに、最後のdevナンバーを1つずつ上げていく。
-const APP_VERSION = "0.1.0-dev.8"
+const APP_VERSION = "0.1.0-dev.9"
 
 
 # --- グローバル変数 ---
