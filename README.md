@@ -199,6 +199,6 @@ Prismの最も重要な設計思想です。UIの表示内容やゲームの起�
 
 ## ©️ 著作権情報 (Copyright)
 
-このプロジェクトは、大阪府立刀根山高等学校 パソコン部の部活動の一環として制作されました。
+このプロジェクトは、大阪府立刀根山高等学校パソコン部の部活動の一環として制作されました。
 
 © 2025 Osaka Prefectural Toneyama High School PC Club. All Rights Reserved.
