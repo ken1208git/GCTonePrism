@@ -1,7 +1,7 @@
 [gd_scene load_steps=3 format=3 uid="uid://c4sp4724srrge"]
 
 [ext_resource type="Script" path="res://scripts/debug_monitor.gd" id="1_7a78e"]
-[ext_resource type="FontFile" uid="uid://b743lj2q07ymm" path="res://assets/fonts/BIZUDPGothic-Regular.ttf" id="2_mmpmr"]
+[ext_resource type="FontFile" uid="uid://b743lj2q07ymm" path="res://assets/fonts/BIZUDPGothic/BIZUDPGothic-Regular.ttf" id="2_mmpmr"]
 
 [node name="DebugMonitor" type="CanvasLayer"]
 script = ExtResource("1_7a78e")

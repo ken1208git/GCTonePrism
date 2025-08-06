@@ -1,6 +1,45 @@
-[gd_scene load_steps=2 format=3 uid="uid://dc14t4enyvxws"]
+[gd_scene load_steps=11 format=3 uid="uid://dc14t4enyvxws"]
 
 [ext_resource type="Script" path="res://scripts/menu.gd" id="1_grg70"]
+[ext_resource type="FontFile" uid="uid://dtvk1eu47wpx5" path="res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Heavy.otf" id="2_7hjxa"]
+[ext_resource type="FontFile" uid="uid://dw5huvnklu4no" path="res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Regular.otf" id="3_t88rp"]
+[ext_resource type="Texture2D" uid="uid://c8a1aqjc7st33" path="res://assets/images/play.png" id="4_1oq0c"]
+
+[sub_resource type="Gradient" id="Gradient_53wpk"]
+offsets = PackedFloat32Array(0, 0.504237, 1)
+colors = PackedColorArray(0, 0, 0, 0.588235, 0.504237, 0.504237, 0.504237, 0.291625, 1, 1, 1, 0)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_okc5j"]
+gradient = SubResource("Gradient_53wpk")
+width = 856
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_1mo5t"]
+bg_color = Color(0, 0, 0, 0.392157)
+corner_radius_top_left = 16
+corner_radius_top_right = 16
+corner_radius_bottom_right = 16
+corner_radius_bottom_left = 16
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_28xye"]
+bg_color = Color(0, 0, 0, 0.392157)
+corner_radius_top_left = 1024
+corner_radius_top_right = 1024
+corner_radius_bottom_right = 1024
+corner_radius_bottom_left = 1024
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_7q0t2"]
+bg_color = Color(0.6, 0.6, 0.6, 0.392157)
+corner_radius_top_left = 20
+corner_radius_top_right = 20
+corner_radius_bottom_right = 20
+corner_radius_bottom_left = 20
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_dt5dl"]
+bg_color = Color(1, 1, 1, 1)
+corner_radius_top_left = 10
+corner_radius_top_right = 10
+corner_radius_bottom_right = 10
+corner_radius_bottom_left = 10
 
 [node name="Menu" type="Control"]
 layout_mode = 3
@@ -19,14 +58,14 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="BackgroundOverlay" type="ColorRect" parent="."]
+[node name="ListOverlay" type="TextureRect" parent="."]
+custom_minimum_size = Vector2(500, 0)
 layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
+anchors_preset = 9
 anchor_bottom = 1.0
-grow_horizontal = 2
+offset_right = 956.0
 grow_vertical = 2
-color = Color(0, 0, 0, 0.588235)
+texture = SubResource("GradientTexture1D_okc5j")
 
 [node name="SafeArea" type="MarginContainer" parent="."]
 layout_mode = 1
@@ -35,15 +74,16 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-theme_override_constants/margin_left = 50
-theme_override_constants/margin_top = 50
-theme_override_constants/margin_right = 50
-theme_override_constants/margin_bottom = 50
+theme_override_constants/margin_left = 70
+theme_override_constants/margin_top = 70
+theme_override_constants/margin_right = 70
+theme_override_constants/margin_bottom = 70
 
 [node name="MainLayout" type="HBoxContainer" parent="SafeArea"]
 layout_mode = 2
 
 [node name="GameListContainer" type="ScrollContainer" parent="SafeArea/MainLayout"]
+clip_contents = false
 custom_minimum_size = Vector2(450, 0)
 layout_mode = 2
 
@@ -57,13 +97,194 @@ size_flags_horizontal = 3
 [node name="Control" type="Control" parent="SafeArea/MainLayout/RightColumn"]
 layout_mode = 2
 size_flags_vertical = 3
-size_flags_stretch_ratio = 3.0
 
-[node name="GameDetailsContainer" type="MarginContainer" parent="SafeArea/MainLayout/RightColumn"]
+[node name="GameDetailsContainer" type="Panel" parent="SafeArea/MainLayout/RightColumn"]
 layout_mode = 2
+size_flags_vertical = 3
+theme_override_styles/panel = SubResource("StyleBoxFlat_1mo5t")
+
+[node name="Padding" type="MarginContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 size_flags_stretch_ratio = 2.0
+theme_override_constants/margin_left = 20
+theme_override_constants/margin_top = 20
+theme_override_constants/margin_right = 20
+theme_override_constants/margin_bottom = 20
 
-[node name="VBoxContainer" type="VBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer"]
+[node name="VBoxContainer" type="VBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding"]
 layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 6
+size_flags_stretch_ratio = 2.0
+theme_override_fonts/font = ExtResource("2_7hjxa")
+theme_override_font_sizes/font_size = 72
+text = "タイトル"
+
+[node name="MetaLabel" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 6
+theme_override_colors/font_color = Color(1, 1, 1, 0.588235)
+theme_override_fonts/font = ExtResource("3_t88rp")
+theme_override_font_sizes/font_size = 28
+text = "刀根山 太郎 (00期生)　20XX　ジャンル: ○○○、○○○　"
+
+[node name="InfoPanel" type="HBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 2.0
+
+[node name="Players" type="HBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel"]
+layout_mode = 2
+
+[node name="Icon" type="TextureRect" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Players"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Players"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("3_t88rp")
+theme_override_font_sizes/font_size = 18
+text = "プレイ人数:"
+
+[node name="Value" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Players"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("2_7hjxa")
+theme_override_font_sizes/font_size = 24
+text = "0～0"
+
+[node name="Label2" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Players"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("3_t88rp")
+theme_override_font_sizes/font_size = 18
+text = "人"
+
+[node name="Difficulty" type="HBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Difficulty"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("3_t88rp")
+theme_override_font_sizes/font_size = 18
+text = "難易度:"
+
+[node name="TextureProgressBar" type="TextureProgressBar" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Difficulty"]
+layout_mode = 2
+
+[node name="Value" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Difficulty"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("2_7hjxa")
+theme_override_font_sizes/font_size = 24
+text = "ふつう"
+
+[node name="PlayTime" type="HBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/PlayTime"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("3_t88rp")
+theme_override_font_sizes/font_size = 18
+text = "推定プレイ時間:"
+
+[node name="TextureProgressBar" type="TextureProgressBar" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/PlayTime"]
+layout_mode = 2
+
+[node name="Value" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/PlayTime"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("2_7hjxa")
+theme_override_font_sizes/font_size = 24
+text = "10~30"
+
+[node name="Label2" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/PlayTime"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("3_t88rp")
+theme_override_font_sizes/font_size = 18
+text = "分"
+
+[node name="Controller" type="HBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel"]
+layout_mode = 2
+
+[node name="Icon" type="TextureRect" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Controller"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Controller"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("3_t88rp")
+theme_override_font_sizes/font_size = 18
+text = "コントローラー:"
+
+[node name="Value" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Controller"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("2_7hjxa")
+theme_override_font_sizes/font_size = 24
+text = "非対応"
+
+[node name="Multiplayer" type="HBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel"]
+layout_mode = 2
+
+[node name="Icon" type="TextureRect" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Multiplayer"]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Multiplayer"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("3_t88rp")
+theme_override_font_sizes/font_size = 18
+text = "教室内マルチプレイ:"
+
+[node name="Value" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Multiplayer"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("2_7hjxa")
+theme_override_font_sizes/font_size = 24
+text = "非対応"
+
+[node name="DescriptionPanel" type="ScrollContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer"]
+custom_minimum_size = Vector2(0, 210)
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 7.0
+
+[node name="VBoxContainer" type="VBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel"]
+layout_mode = 2
+
+[node name="GameDescriptionText" type="RichTextLabel" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer"]
+layout_mode = 2
+
+[node name="ControlsTitleLabel" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer"]
+layout_mode = 2
+
+[node name="ControlsLayout" type="HBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer"]
+layout_mode = 2
+
+[node name="KeyboardControlsGrid" type="GridContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer/ControlsLayout"]
+layout_mode = 2
+columns = 2
+
+[node name="GamepadControlsGrid" type="GridContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer/ControlsLayout"]
+layout_mode = 2
+columns = 2
+
+[node name="PlayButton" type="Button" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer"]
+custom_minimum_size = Vector2(130, 130)
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -170.0
+offset_top = 40.0
+offset_right = -40.0
+offset_bottom = 170.0
+grow_horizontal = 0
+theme_override_constants/icon_max_width = 80
+theme_override_styles/normal = SubResource("StyleBoxFlat_28xye")
+theme_override_styles/hover = SubResource("StyleBoxFlat_7q0t2")
+theme_override_styles/pressed = SubResource("StyleBoxFlat_dt5dl")
+icon = ExtResource("4_1oq0c")
+text_overrun_behavior = 1
+icon_alignment = 1
