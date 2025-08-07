@@ -3,7 +3,7 @@
 extends Node
 
 # --- アプリケーション情報 ---
-const APP_VERSION = "0.1.0-dev.12"
+const APP_VERSION = "0.1.0-dev.13"
 
 
 # --- グローバル変数 ---
@@ -70,20 +70,19 @@ func load_all_games_info():
 	
 	log_message("ゲーム情報のスキャンを開始します...")
 
-	var checked_ids = []
-
 	for game_folder_name in games_order:
-		if game_folder_name in checked_ids:
-			log_message("警告: launcher_config.json の games_order 内に、'%s' が重複しています。意図しない重複でないか確認してください。" % game_folder_name)
-		
-		checked_ids.append(game_folder_name)
+		var game_folder_path = games_dir_path.path_join(game_folder_name)
+		var game_data: Dictionary = {}
 
-		var info_file_path = "%s/%s/launcher_info.json" % [games_dir_path, game_folder_name]
-		
+		if not DirAccess.dir_exists_absolute(game_folder_path):
+			log_message("【重大な警告】: ゲームフォルダ '%s' が見つかりません！リストから除外します。" % game_folder_path)
+			continue
+
+		var info_file_path = game_folder_path.path_join("launcher_info.json")
 		if not FileAccess.file_exists(info_file_path):
 			log_message("警告: %s が見つかりません。スキップします。" % info_file_path)
 			continue
-
+		
 		var file = FileAccess.open(info_file_path, FileAccess.READ)
 		var content = file.get_as_text()
 		file.close()
@@ -93,7 +92,13 @@ func load_all_games_info():
 			log_message("警告: %s の解析に失敗しました。スキップします。" % info_file_path)
 			continue
 		
-		var game_data: Dictionary = json.get_data()
+		game_data = json.get_data()
+		
+		# --- ここからが、最後の修正 ---
+		# 保険として、フォルダ名と、ゲームフォルダへの完全なパスも、データに含めておく
+		game_data["folder_name"] = game_folder_name
+		game_data["game_directory_path"] = game_folder_path
+		# --- ここまでが、最後の修正 ---
 		
 		var required_keys = [
 			"game_id", "title", "description", "developers", "release_year",
@@ -141,22 +146,16 @@ func get_log_history() -> String:
 
 # 値が「空っぽ」かどうかを判定するための、補助的な関数。
 func is_value_empty(value) -> bool:
-	# 値の型に応じて、空っぽの定義を使い分ける。
 	match typeof(value):
 		TYPE_STRING:
 			return value.is_empty()
 		TYPE_ARRAY:
-			# もし、配列が空っぽなら、もちろん「空」。
 			if value.is_empty():
 				return true
-			# もし、配列に要素が1つだけあり、かつ、その要素が「空の辞書」なら、
-			# それもまた、「実質的に空」と見なす。
 			if value.size() == 1 and typeof(value[0]) == TYPE_DICTIONARY and value[0].is_empty():
 				return true
-			# それ以外の場合は、「空ではない」。
 			return false
 		TYPE_DICTIONARY:
 			return value.is_empty()
 		_:
-			# それ以外の型（数値など）は、空とは見なさない。
 			return false

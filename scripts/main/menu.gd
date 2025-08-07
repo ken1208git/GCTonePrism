@@ -2,8 +2,7 @@
 extends Control
 
 # --- ノードへの参照（オンレディ変数） ---
-# このスクリプトから、動的に内容を変更したいUI部品に、あらかじめ「あだ名」を付けておく。
-# `%`を使った「シーンユニーク名」で指定することで、将来レイアウトを変更しても、コードを壊れにくくする。
+# シーンツリーの「真実」に基づいた、最終形態の参照
 @onready var game_list: VBoxContainer = %GameList
 @onready var title_label: Label = %TitleLabel
 @onready var meta_label: RichTextLabel = %MetaLabel
@@ -14,30 +13,23 @@ extends Control
 @onready var playtime_value_label: Label = %PlayTimeValue
 @onready var controller_value_label: Label = %ControllerValue
 @onready var multiplayer_value_label: Label = %MultiplayerValue
-@onready var description_text: RichTextLabel = %GameDescriptionText
-@onready var keyboard_controls_grid: GridContainer = %KeyboardControlsGrid
-@onready var gamepad_controls_grid: GridContainer = %GamepadControlsGrid
-@onready var keyboard_panel: PanelContainer = %KeyboardPanel
-@onready var gamepad_panel: PanelContainer = %GamepadPanel
+@onready var info_panel: HBoxContainer = %InfoPanel
+@onready var play_button: Button = %PlayButton
+@onready var background: TextureRect = %Background
+
+# --- あなたの、新しい、革命的な、構造への、参照 ---
+@onready var details_text: RichTextLabel = %DetailsText
 
 # --- 変数定義 ---
-# 現在、リストの何番目が選択されているかを記録しておくための変数。0は、一番最初の項目を意味する。
 var current_selection_index: int = 0
-# 操作方法のテキストに適用するための、フォントファイルを、あらかじめ読み込んでおく。
 var controls_font: Font = load("res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Regular.otf")
 
 # --- Godotの標準関数 ---
-
-# このノード（Menuシーン）が、最初に画面に表示されたときに、一度だけ呼ばれる関数。
 func _ready() -> void:
-	# ゲームリストのサムネイルを、JSONの情報を元に、自動で生成する。
 	populate_game_list()
-	# すべてのレイアウト計算が終わった、完璧なタイミングで、最初の表示更新を行う。
 	await get_tree().process_frame
 	
-	# ScrollContainerが内部的に持っている垂直スクロールバーを取得し、
-	# その構成部品である「溝」と「3状態のつまみ」の、合計4つのスタイルを
-	# 「何もないスタイル」で上書きし、完全に透明にする。
+	# ゲームリストの、スクロールバーを、透明にする
 	var v_scroll_bar = %GameListContainer.get_v_scroll_bar()
 	v_scroll_bar.add_theme_stylebox_override("scroll", StyleBoxEmpty.new())
 	v_scroll_bar.add_theme_stylebox_override("grabber", StyleBoxEmpty.new())
@@ -46,85 +38,76 @@ func _ready() -> void:
 	
 	update_display()
 
-# この関数は、毎フレーム呼び出される。'delta'は、前回この関数が呼ばれてから経過した時間（秒）。
-# 今回は使わないので、引数名の先頭にアンダースコア `_` を付けて、意図的に使っていないことを示している。
 func _process(_delta: float) -> void:
 	pass
 
-# この関数は、キーボード入力など、まだ誰にも処理されていない入力を受け取る。
 func _unhandled_input(event: InputEvent) -> void:
-	# もし、リストにゲームが一つもなければ、キー操作を受け付けない。
 	if game_list.get_child_count() == 0:
 		return
 	
-	# "ui_down"（下キー）が押された瞬間を検知する。
 	if event.is_action_pressed("ui_down"):
-		# 選択番号を1つ増やし、リストの数で割った余りを求めることで、リストの範囲をループさせる。
 		current_selection_index = (current_selection_index + 1) % game_list.get_child_count()
-		# 選択が変わったので、画面の表示をすべて更新する。
 		update_display()
 		
-	# "ui_up"（上キー）が押された瞬間を検知する。
 	if event.is_action_pressed("ui_up"):
-		# 選択番号を1つ減らす。リストの数を足してから余りを求めることで、マイナスになるのを防ぐ。
 		current_selection_index = (current_selection_index - 1 + game_list.get_child_count()) % game_list.get_child_count()
-		# 選択が変わったので、画面の表示をすべて更新する。
 		update_display()
 
 # --- 自作の関数 ---
-
-# ゲームリストに、サムネイルを動的に生成して並べるための関数。
 func populate_game_list() -> void:
-	# まず、リストにすでに何か項目があれば、すべて削除して、まっさらな状態にする。
 	for child in game_list.get_children():
 		child.queue_free()
 	
-	# ゲームサムネイルの「設計図」（シーンファイル）を、あらかじめ読み込んでおく。
 	var thumbnail_scene: PackedScene = load("res://scenes/components/game_thumbnail.tscn")
 
-	# Globalに保存されている、すべてのゲーム情報の配列を、一つずつ処理するループ。
 	for game_data in Global.all_games_data:
-		# 設計図から、新しいサムネイルの「実体」（インスタンス）を作成する。
 		var thumbnail_instance: Panel = thumbnail_scene.instantiate()
-		# 作成したサムネイルインスタンスに、対応するゲームの情報を渡して、画像などを設定させる。
 		thumbnail_instance.set_game_data(game_data)
-		# 完成したサムネイルを、リスト（VBoxContainer）の子として追加する。
 		game_list.add_child(thumbnail_instance)
 
-# 選択が変更されたときに、リストの見た目と、詳細情報パネルの両方を更新する、最強の関数。
 func update_display() -> void:
-	# もし、リストにゲームが一つもなければ、何もせずに処理を終了する。
 	if game_list.get_child_count() == 0:
 		return
 		
-	# --- 1. リストの見た目を更新し、自動スクロールさせる ---
-	# リストの中の、すべてのサムネイルをチェックする。
 	for i in range(game_list.get_child_count()):
 		var thumbnail = game_list.get_child(i)
-		# もし、このサムネイルが、現在選択されているものなら
 		if i == current_selection_index:
-			# 少しだけ大きくして、目立たせる。
 			thumbnail.scale = Vector2(1.3, 1.3)
 		else:
-			# それ以外は、元の大きさに戻す。
 			thumbnail.scale = Vector2(1.0, 1.0)
 	
-	# 現在選択されているサムネイルが、常に画面の中央に来るように、スクロールを自動調整する。
 	var selected_thumbnail = game_list.get_child(current_selection_index)
 	%GameListContainer.ensure_control_visible(selected_thumbnail)
 
-	# --- 2. 詳細情報パネルを更新する ---
-	# 現在選択されているゲームの、完全なデータを、Globalから取得する。
 	var selected_game_data: Dictionary = Global.all_games_data[current_selection_index]
 	
-	# --- Title (未入力の場合は、フォルダ名で代替表示) ---
+	# --- ここからが、最後の、そして、真の、修正 ---
+	# 読み込み失敗フラグをチェックし、失敗時は専用の表示を行う
+	if selected_game_data.get("is_load_failed", false):
+		title_label.text = selected_game_data.get("title", "読み込み失敗")
+		meta_label.text = "ゲーム情報の読み込みに失敗しました。"
+		details_text.text = "管理者にお知らせください。\n- launcher_info.jsonが存在しないか、\n- JSONの書式が間違っている可能性があります。"
+		info_panel.hide()
+		play_button.hide()
+		background.texture = null
+		# 古い、不要な、ノードも、隠しておく
+		if has_node("%ControlsLayout"): get_node("%ControlsLayout").hide()
+		if has_node("%GameDescriptionText"): get_node("%GameDescriptionText").hide()
+		return
+	else:
+		# 成功した場合は、通常の表示を行う
+		info_panel.show()
+		play_button.show()
+
+	# --- タイトルと、メタ情報の、表示 ---
 	var title_text = selected_game_data.get("title", "")
 	if title_text.is_empty():
-		title_text = Global.launcher_config.get("games_order")[current_selection_index]
+		title_text = selected_game_data.get("game_id", "")
+	if title_text.is_empty():
+		title_text = selected_game_data.get("folder_name", "タイトル不明")
 	title_label.text = title_text
 	
-	# --- Meta (情報がなければ、その部分ごと表示しない、賢い組み立て) ---
-	meta_label.clear() # まず、内容をリセットする。
+	meta_label.clear()
 	var developers: Array = selected_game_data.get("developers", [])
 	if not developers.is_empty():
 		var dev: Dictionary = developers[0]
@@ -155,7 +138,7 @@ func update_display() -> void:
 	if not genre_list.is_empty():
 		meta_label.append_text("ジャンル: %s" % [", ".join(genre_list)])
 
-	# --- InfoPanel: Players ---
+	# --- 概要情報パネル（InfoPanel）の、表示 ---
 	var min_players: int = selected_game_data.get("min_players", 0)
 	var max_players: int = selected_game_data.get("max_players", 0)
 	if min_players > 0 and max_players > 0:
@@ -164,7 +147,6 @@ func update_display() -> void:
 		else:
 			players_value_label.text = "%d〜%d人" % [min_players, max_players]
 	
-	# --- InfoPanel: Difficulty (未入力の場合は、ゲージごと非表示) ---
 	var difficulty: int = selected_game_data.get("difficulty", 0)
 	if difficulty > 0:
 		difficulty_gauge.show()
@@ -175,7 +157,6 @@ func update_display() -> void:
 		difficulty_gauge.hide()
 		difficulty_value_label.text = ""
 
-	# --- InfoPanel: PlayTime (未入力の場合は、ゲージごと非表示) ---
 	var playtime: int = selected_game_data.get("play_time", 0)
 	if playtime > 0:
 		playtime_gauge.show()
@@ -186,73 +167,95 @@ func update_display() -> void:
 		playtime_gauge.hide()
 		playtime_value_label.text = ""
 
-	# --- InfoPanel: Controller & Multiplayer ---
 	var controller_support: bool = selected_game_data.get("controller_support", false)
 	controller_value_label.text = "対応" if controller_support else "非対応"
 
 	var multiplayer_support: bool = selected_game_data.get("lan_multiplayer_support", false)
 	multiplayer_value_label.text = "対応" if multiplayer_support else "非対応"
 	
-	# --- Description ---
-	description_text.text = selected_game_data.get("description", "")
+		# --- 詳細情報テキスト（DetailsText）の、組み立て ---
+	details_text.clear()
 	
-	# --- Background ---
-	var background_path: String = selected_game_data.get("background_path", "")
-	%Background.texture = null
-	if not background_path.is_empty():
-		var games_dir_path = Global.launcher_config.get("games_directory", "")
-		var game_id = selected_game_data.get("game_id", "")
-		var full_path = games_dir_path.path_join(game_id).path_join(background_path)
-		if FileAccess.file_exists(full_path):
-			if full_path.get_extension().to_lower() in ["png", "jpg", "jpeg", "svg", "webp"]:
-				var image = Image.new()
-				if image.load(full_path) == OK:
-					var texture = ImageTexture.create_from_image(image)
-					%Background.texture = texture
-		else:
-			Global.log_message("警告: 背景画像が見つかりません - %s" % full_path)
+	var description = selected_game_data.get("description", "")
+	if not description.is_empty():
+		# 説明文と「操作方法」の間の、スペースを、少しだけ、狭くする
+		details_text.append_text(description + "\n\n")
 	
-	# --- Controls (操作方法の表を、動的に生成する) ---
-	for child in keyboard_controls_grid.get_children():
-		child.queue_free()
-	for child in gamepad_controls_grid.get_children():
-		child.queue_free()
-		
+	# 「操作方法」の、テキストサイズを、28に、設定する
+	details_text.push_font_size(28)
+	details_text.push_bold()
+	details_text.append_text("操作方法\n")
+	details_text.pop()
+	details_text.pop() # font_size
+	
 	var controls: Dictionary = selected_game_data.get("controls", {})
 	var keyboard_controls: Dictionary = controls.get("keyboard", {})
-	if not keyboard_controls.is_empty():
-		%KeyboardPanel.show()
-		for action in keyboard_controls:
-			var key = keyboard_controls[action]
-			var action_label = Label.new()
-			action_label.text = action
-			action_label.add_theme_font_override("font", controls_font)
-			var key_label = Label.new()
-			key_label.text = key
-			key_label.add_theme_font_override("font", controls_font)
-			keyboard_controls_grid.add_child(action_label)
-			keyboard_controls_grid.add_child(key_label)
-	else:
-		%KeyboardPanel.hide()
-
 	var gamepad_controls: Dictionary = controls.get("gamepad", {})
-	if not gamepad_controls.is_empty():
-		%GamepadPanel.show()
+	
+	if not keyboard_controls.is_empty() and not gamepad_controls.is_empty():
+		details_text.push_table(2)
+		details_text.push_cell()
+		# 「キーボード」の、テキストサイズを、24に、設定する
+		details_text.push_font_size(24)
+		details_text.push_bold()
+		details_text.append_text("キーボード\n")
+		details_text.pop()
+		details_text.pop() # font_size
+		for action in keyboard_controls:
+			details_text.append_text("%s: %s\n" % [action, keyboard_controls[action]])
+		details_text.pop()
+		details_text.push_cell()
+		# 「コントローラー」の、テキストサイズを、24に、設定する
+		details_text.push_font_size(24)
+		details_text.push_bold()
+		details_text.append_text("コントローラー\n")
+		details_text.pop()
+		details_text.pop() # font_size
 		for action in gamepad_controls:
-			var button = gamepad_controls[action]
-			var action_label = Label.new()
-			action_label.text = action
-			action_label.add_theme_font_override("font", controls_font)
-			var button_label = Label.new()
-			button_label.text = button
-			button_label.add_theme_font_override("font", controls_font)
-			gamepad_controls_grid.add_child(action_label)
-			gamepad_controls_grid.add_child(button_label)
+			details_text.append_text("%s: %s\n" % [action, gamepad_controls[action]])
+		details_text.pop()
+		details_text.pop()
+	elif not keyboard_controls.is_empty():
+		# 「キーボード」の、テキストサイズを、24に、設定する
+		details_text.push_font_size(24)
+		details_text.push_bold()
+		details_text.append_text("キーボード\n")
+		details_text.pop()
+		details_text.pop() # font_size
+		for action in keyboard_controls:
+			details_text.append_text("%s: %s\n" % [action, keyboard_controls[action]])
+	elif not gamepad_controls.is_empty():
+		# 「コントローラー」の、テキストサイズを、24に、設定する
+		details_text.push_font_size(24)
+		details_text.push_bold()
+		details_text.append_text("コントローラー\n")
+		details_text.pop()
+		details_text.pop() # font_size
+		for action in gamepad_controls:
+			details_text.append_text("%s: %s\n" % [action, gamepad_controls[action]])
 	else:
-		%GamepadPanel.hide()
+		details_text.append_text("(操作方法は、設定されていません)")
 
+	# --- 背景画像の、表示 ---
+	var background_path: String = selected_game_data.get("background_path", "")
+	background.texture = null
+	if not background_path.is_empty():
+		var game_dir_path = selected_game_data.get("game_directory_path", "")
+		if not game_dir_path.is_empty():
+			var full_path = game_dir_path.path_join(background_path)
+			if FileAccess.file_exists(full_path):
+				if full_path.get_extension().to_lower() in ["png", "jpg", "jpeg", "svg", "webp"]:
+					var image = Image.new()
+					if image.load(full_path) == OK:
+						var texture = ImageTexture.create_from_image(image)
+						background.texture = texture
+			else:
+				Global.log_message("警告: 背景画像が見つかりません - %s" % full_path)
+	
+	# --- 古い、不要な、ノードを、非表示にする（安全装置） ---
+	if has_node("%ControlsLayout"): get_node("%ControlsLayout").hide()
+	if has_node("%GameDescriptionText"): get_node("%GameDescriptionText").hide()
 
-# プレイボタンが押されたときに、呼び出される関数。
 func _on_play_button_pressed() -> void:
 	if Global.all_games_data.is_empty():
 		return
@@ -264,16 +267,19 @@ func _on_play_button_pressed() -> void:
 		Global.log_message("【重大なエラー】: このゲームには、実行ファイルが設定されていません！")
 		return
 
-	var games_dir_path_internal = Global.launcher_config.get("games_directory", "")
-	var games_dir_path_global = ProjectSettings.globalize_path(games_dir_path_internal)
-	var game_id = selected_game_data.get("game_id", "")
-	var full_path = games_dir_path_global.path_join(game_id).path_join(executable_path)
+	var game_dir_path = selected_game_data.get("game_directory_path", "")
+	if game_dir_path.is_empty():
+		Global.log_message("【重大なエラー】: game_directory_pathがデータにありません！")
+		return
+		
+	var full_path_internal = game_dir_path.path_join(executable_path)
+	var full_path_global = ProjectSettings.globalize_path(full_path_internal)
 	
-	if not FileAccess.file_exists(full_path):
-		Global.log_message("【重大なエラー】: 実行ファイルが見つかりません！ パスを確認してください: %s" % full_path)
+	if not FileAccess.file_exists(full_path_global):
+		Global.log_message("【重大なエラー】: 実行ファイルが見つかりません！ パスを確認してください: %s" % full_path_global)
 		return
 
-	var pid = OS.create_process(full_path, [])
+	var pid = OS.create_process(full_path_global, [])
 
 	if pid != -1:
 		Global.log_message("ゲームを起動しました。プロセスID: %d" % pid)
