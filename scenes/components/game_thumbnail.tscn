@@ -13,7 +13,6 @@ grow_horizontal = 2
 grow_vertical = 2
 pivot_offset = Vector2(128, 128)
 size_flags_horizontal = 3
-focus_mode = 2
 script = ExtResource("1_nmika")
 
 [node name="TextureRect" type="TextureRect" parent="."]
@@ -24,4 +23,5 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-expand_mode = 2
+expand_mode = 1
+stretch_mode = 6

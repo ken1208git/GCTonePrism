@@ -7,8 +7,7 @@
 [ext_resource type="FontFile" uid="uid://5a6j0vbwtop1" path="res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Bold.otf" id="4_mykea"]
 
 [sub_resource type="Gradient" id="Gradient_53wpk"]
-offsets = PackedFloat32Array(0, 0.504237, 1)
-colors = PackedColorArray(0, 0, 0, 0.588235, 0.504237, 0.504237, 0.504237, 0.291625, 1, 1, 1, 0)
+colors = PackedColorArray(0, 0, 0, 0.588235, 0, 0, 0, 0)
 
 [sub_resource type="GradientTexture1D" id="GradientTexture1D_okc5j"]
 gradient = SubResource("Gradient_53wpk")
@@ -61,6 +60,8 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+expand_mode = 1
+stretch_mode = 6
 
 [node name="ListOverlay" type="TextureRect" parent="."]
 custom_minimum_size = Vector2(500, 0)
