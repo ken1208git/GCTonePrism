@@ -1,7 +1,10 @@
 {
   "games_directory": "res://../Games",
   "games_order": [
-    "LaunchTest",
-    "DescriptionTest"
+	"RobotSurvivor",
+	"ToneGuessr",
+	"toneppy_game",
+	"LaunchTest",
+	"DescriptionTest"
   ]
 }
