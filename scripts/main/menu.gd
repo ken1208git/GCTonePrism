@@ -34,6 +34,16 @@ func _ready() -> void:
 	populate_game_list()
 	# すべてのレイアウト計算が終わった、完璧なタイミングで、最初の表示更新を行う。
 	await get_tree().process_frame
+	
+	# ScrollContainerが内部的に持っている垂直スクロールバーを取得し、
+	# その構成部品である「溝」と「3状態のつまみ」の、合計4つのスタイルを
+	# 「何もないスタイル」で上書きし、完全に透明にする。
+	var v_scroll_bar = %GameListContainer.get_v_scroll_bar()
+	v_scroll_bar.add_theme_stylebox_override("scroll", StyleBoxEmpty.new())
+	v_scroll_bar.add_theme_stylebox_override("grabber", StyleBoxEmpty.new())
+	v_scroll_bar.add_theme_stylebox_override("grabber_highlight", StyleBoxEmpty.new())
+	v_scroll_bar.add_theme_stylebox_override("grabber_pressed", StyleBoxEmpty.new())
+	
 	update_display()
 
 # この関数は、毎フレーム呼び出される。'delta'は、前回この関数が呼ばれてから経過した時間（秒）。
