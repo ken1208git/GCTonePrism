@@ -62,36 +62,36 @@
 次に、あなたのゲームフォルダの中に、`launcher_info.json`という名前で新しいテキストファイルを作成し、以下の**テンプレート**を**すべてコピー**して貼り付けてください。
 
 ```json
-	{
-		"game_id": "ここに半角英数字のIDを入力 (フォルダ名と同じ)",
-		"title": "ここにゲームの正式名称を入力",
-		"description": "ここにゲームの紹介文を入力してください。",
-		"developers": [
-		{ "last_name": "姓", "first_name": "名", "grade": XX }
-		],
-		"release_year": 2025,
-		"genre": ["ジャンル1", "ジャンル2"],
-		"min_players": 1,
-		"max_players": 1,
-		"difficulty": 1,
-		"play_time": 1,
-		"thumbnail_path": "thumbnail.png",
-		"background_path": "background.jpg",
-		"executable_path": "game.exe",
-		"controller_support": false,
-		"lan_multiplayer_support": false,
-		"controls": {
-			"keyboard": {
-				"操作名1": "キー1",
-				"操作名2": "キー2"
-			},
-			"gamepad": {
-				"操作名1": "ボタン1",
-				"操作名2": "ボタン2"
-			}
+{
+	"game_id": "ここに半角英数字のIDを入力 (フォルダ名と同じ)",
+	"title": "ここにゲームの正式名称を入力",
+	"description": "ここにゲームの紹介文を入力してください。",
+	"developers": [
+	{ "last_name": "姓", "first_name": "名", "grade": XX }
+	],
+	"release_year": 2025,
+	"genre": ["ジャンル1", "ジャンル2"],
+	"min_players": 1,
+	"max_players": 1,
+	"difficulty": 1,
+	"play_time": 1,
+	"thumbnail_path": "thumbnail.png",
+	"background_path": "background.jpg",
+	"executable_path": "game.exe",
+	"controller_support": false,
+	"lan_multiplayer_support": false,
+	"controls": {
+		"keyboard": {
+			"操作名1": "キー1",
+			"操作名2": "キー2"
 		},
-		"key_mapping": null
-	}
+		"gamepad": {
+			"操作名1": "ボタン1",
+			"操作名2": "ボタン2"
+		}
+	},
+	"key_mapping": null
+}
 ```
 
 ### ステップ3：あなたのゲーム情報に書き換える
