@@ -1,4 +1,4 @@
-[gd_scene load_steps=12 format=3 uid="uid://dc14t4enyvxws"]
+[gd_scene load_steps=13 format=3 uid="uid://dc14t4enyvxws"]
 
 [ext_resource type="Script" path="res://scripts/main/menu.gd" id="1_grg70"]
 [ext_resource type="FontFile" uid="uid://dtvk1eu47wpx5" path="res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Heavy.otf" id="2_7hjxa"]
@@ -13,6 +13,8 @@ colors = PackedColorArray(0, 0, 0, 0.588235, 0.504237, 0.504237, 0.504237, 0.291
 [sub_resource type="GradientTexture1D" id="GradientTexture1D_okc5j"]
 gradient = SubResource("Gradient_53wpk")
 width = 856
+
+[sub_resource type="StyleBoxEmpty" id="StyleBoxEmpty_pxlff"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_1mo5t"]
 bg_color = Color(0, 0, 0, 0.392157)
@@ -85,13 +87,24 @@ theme_override_constants/margin_bottom = 70
 layout_mode = 2
 
 [node name="GameListContainer" type="ScrollContainer" parent="SafeArea/MainLayout"]
+unique_name_in_owner = true
 clip_contents = false
 custom_minimum_size = Vector2(450, 0)
 layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBoxEmpty_pxlff")
+horizontal_scroll_mode = 0
 
-[node name="GameList" type="VBoxContainer" parent="SafeArea/MainLayout/GameListContainer"]
+[node name="CenterContainer" type="CenterContainer" parent="SafeArea/MainLayout/GameListContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="GameList" type="VBoxContainer" parent="SafeArea/MainLayout/GameListContainer/CenterContainer"]
 unique_name_in_owner = true
 layout_mode = 2
+size_flags_horizontal = 4
+theme_override_constants/separation = 50
+alignment = 1
 
 [node name="RightColumn" type="VBoxContainer" parent="SafeArea/MainLayout"]
 layout_mode = 2
@@ -141,6 +154,7 @@ theme_override_colors/default_color = Color(1, 1, 1, 0.784314)
 theme_override_fonts/normal_font = ExtResource("3_t88rp")
 theme_override_font_sizes/normal_font_size = 24
 text = "刀根山 太郎 (00期生)　20XX　ジャンル: ○○○、○○○　"
+fit_content = true
 
 [node name="InfoPanel" type="HBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer"]
 layout_mode = 2
