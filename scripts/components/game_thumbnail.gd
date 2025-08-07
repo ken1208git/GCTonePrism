@@ -11,23 +11,30 @@ func set_game_data(game_data: Dictionary) -> void:
 	# ゲーム情報の中から、サムネイル画像のパスを取得する。
 	var thumbnail_path: String = game_data.get("thumbnail_path", "")
 	
+	# もし、パスが空っぽなら、ここで処理を終了する。
 	if thumbnail_path.is_empty():
 		return
 
+	# ゲームのベースとなるディレクトリのパスを、configファイルから取得する。
 	var games_dir_path: String = Global.launcher_config.get("games_directory", "")
+	
+	# ゲームのID（=フォルダ名）を取得する。
 	var game_id: String = game_data.get("game_id", "")
 	
+	# すべてを連結して、画像ファイルへの、Godotの内部パスを組み立てる。
 	var full_path = games_dir_path.path_join(game_id).path_join(thumbnail_path)
-	var global_path = ProjectSettings.globalize_path(full_path)
 	
+	# Image.load()は、"res://"から始まるパスを、正しく解釈できる。
 	var image = Image.new()
-	var error = image.load(global_path)
+	var error = image.load(full_path)
 	
+	# もし、読み込みに失敗したら（ファイルが存在しない、など）
 	if error != OK:
-		print("エラー: 画像ファイルの読み込みに失敗しました - ", global_path)
+		print("エラー: 画像ファイルの読み込みに失敗しました - ", full_path)
 		return
 	
+	# 読み込んだ生の画像データから、Godotが画面に表示できるテクスチャを作成する。
 	var image_texture = ImageTexture.create_from_image(image)
 	
-	# この時点では、texture_rectは、もはや絶対にNilではない。
+	# 作成したテクスチャを、TextureRectに設定する。
 	texture_rect.texture = image_texture

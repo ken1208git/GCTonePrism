@@ -1,9 +1,10 @@
-[gd_scene load_steps=11 format=3 uid="uid://dc14t4enyvxws"]
+[gd_scene load_steps=12 format=3 uid="uid://dc14t4enyvxws"]
 
 [ext_resource type="Script" path="res://scripts/main/menu.gd" id="1_grg70"]
 [ext_resource type="FontFile" uid="uid://dtvk1eu47wpx5" path="res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Heavy.otf" id="2_7hjxa"]
 [ext_resource type="FontFile" uid="uid://dw5huvnklu4no" path="res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Regular.otf" id="3_t88rp"]
 [ext_resource type="Texture2D" uid="uid://c8a1aqjc7st33" path="res://assets/images/play.png" id="4_1oq0c"]
+[ext_resource type="FontFile" uid="uid://5a6j0vbwtop1" path="res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Bold.otf" id="4_mykea"]
 
 [sub_resource type="Gradient" id="Gradient_53wpk"]
 offsets = PackedFloat32Array(0, 0.504237, 1)
@@ -51,6 +52,7 @@ grow_vertical = 2
 script = ExtResource("1_grg70")
 
 [node name="Background" type="TextureRect" parent="."]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -123,6 +125,7 @@ theme_override_constants/margin_bottom = 20
 layout_mode = 2
 
 [node name="TitleLabel" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 6
 size_flags_stretch_ratio = 2.0
@@ -130,12 +133,13 @@ theme_override_fonts/font = ExtResource("2_7hjxa")
 theme_override_font_sizes/font_size = 72
 text = "タイトル"
 
-[node name="MetaLabel" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer"]
+[node name="MetaLabel" type="RichTextLabel" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer"]
+unique_name_in_owner = true
 layout_mode = 2
-size_flags_vertical = 6
-theme_override_colors/font_color = Color(1, 1, 1, 0.588235)
-theme_override_fonts/font = ExtResource("3_t88rp")
-theme_override_font_sizes/font_size = 28
+size_flags_vertical = 3
+theme_override_colors/default_color = Color(1, 1, 1, 0.784314)
+theme_override_fonts/normal_font = ExtResource("3_t88rp")
+theme_override_font_sizes/normal_font_size = 24
 text = "刀根山 太郎 (00期生)　20XX　ジャンル: ○○○、○○○　"
 
 [node name="InfoPanel" type="HBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer"]
@@ -155,7 +159,8 @@ theme_override_fonts/font = ExtResource("3_t88rp")
 theme_override_font_sizes/font_size = 18
 text = "プレイ人数:"
 
-[node name="Value" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Players"]
+[node name="PlayersValue" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Players"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_fonts/font = ExtResource("2_7hjxa")
 theme_override_font_sizes/font_size = 24
@@ -176,10 +181,12 @@ theme_override_fonts/font = ExtResource("3_t88rp")
 theme_override_font_sizes/font_size = 18
 text = "難易度:"
 
-[node name="TextureProgressBar" type="TextureProgressBar" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Difficulty"]
+[node name="DifficultyTextureProgressBar" type="TextureProgressBar" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Difficulty"]
+unique_name_in_owner = true
 layout_mode = 2
 
-[node name="Value" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Difficulty"]
+[node name="DifficultyValue" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Difficulty"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_fonts/font = ExtResource("2_7hjxa")
 theme_override_font_sizes/font_size = 24
@@ -194,10 +201,12 @@ theme_override_fonts/font = ExtResource("3_t88rp")
 theme_override_font_sizes/font_size = 18
 text = "推定プレイ時間:"
 
-[node name="TextureProgressBar" type="TextureProgressBar" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/PlayTime"]
+[node name="PlayTimeTextureProgressBar" type="TextureProgressBar" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/PlayTime"]
+unique_name_in_owner = true
 layout_mode = 2
 
-[node name="Value" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/PlayTime"]
+[node name="PlayTimeValue" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/PlayTime"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_fonts/font = ExtResource("2_7hjxa")
 theme_override_font_sizes/font_size = 24
@@ -221,7 +230,8 @@ theme_override_fonts/font = ExtResource("3_t88rp")
 theme_override_font_sizes/font_size = 18
 text = "コントローラー:"
 
-[node name="Value" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Controller"]
+[node name="ControllerValue" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Controller"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_fonts/font = ExtResource("2_7hjxa")
 theme_override_font_sizes/font_size = 24
@@ -239,7 +249,8 @@ theme_override_fonts/font = ExtResource("3_t88rp")
 theme_override_font_sizes/font_size = 18
 text = "教室内マルチプレイ:"
 
-[node name="Value" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Multiplayer"]
+[node name="MultiplayerValue" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel/Multiplayer"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_fonts/font = ExtResource("2_7hjxa")
 theme_override_font_sizes/font_size = 24
@@ -253,22 +264,55 @@ size_flags_stretch_ratio = 7.0
 
 [node name="VBoxContainer" type="VBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel"]
 layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
 
 [node name="GameDescriptionText" type="RichTextLabel" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="ControlsTitleLabel" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer"]
 layout_mode = 2
+theme_override_fonts/font = ExtResource("4_mykea")
+theme_override_font_sizes/font_size = 28
+text = "操作方法"
 
 [node name="ControlsLayout" type="HBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer"]
 layout_mode = 2
+size_flags_vertical = 3
 
-[node name="KeyboardControlsGrid" type="GridContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer/ControlsLayout"]
+[node name="KeyboardPanel" type="PanelContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer/ControlsLayout"]
+unique_name_in_owner = true
 layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="HeaderLabel" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer/ControlsLayout/KeyboardPanel"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("4_mykea")
+theme_override_font_sizes/font_size = 24
+text = "キーボード"
+
+[node name="KeyboardControlsGrid" type="GridContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer/ControlsLayout/KeyboardPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
 columns = 2
 
-[node name="GamepadControlsGrid" type="GridContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer/ControlsLayout"]
+[node name="GamepadPanel" type="PanelContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer/ControlsLayout"]
+unique_name_in_owner = true
 layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="HeaderLabel" type="Label" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer/ControlsLayout/GamepadPanel"]
+layout_mode = 2
+theme_override_fonts/font = ExtResource("4_mykea")
+theme_override_font_sizes/font_size = 24
+text = "コントローラー"
+
+[node name="GamepadControlsGrid" type="GridContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DescriptionPanel/VBoxContainer/ControlsLayout/GamepadPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
 columns = 2
 
 [node name="PlayButton" type="Button" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer"]
@@ -289,3 +333,5 @@ theme_override_styles/pressed = SubResource("StyleBoxFlat_dt5dl")
 icon = ExtResource("4_1oq0c")
 text_overrun_behavior = 1
 icon_alignment = 1
+
+[connection signal="pressed" from="SafeArea/MainLayout/RightColumn/GameDetailsContainer/PlayButton" to="." method="_on_play_button_pressed"]
