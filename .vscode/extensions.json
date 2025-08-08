@@ -1,0 +1,9 @@
+{
+	"recommendations": [
+		"godot-tools.godot-tools",
+		"ms-vscode.vscode-json",
+		"bradlc.vscode-tailwindcss",
+		"esbenp.prettier-vscode",
+		"ms-vscode.vscode-typescript-next"
+	]
+}
