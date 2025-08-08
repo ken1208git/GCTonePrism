@@ -17,8 +17,8 @@ config/icon="res://icon.png"
 
 [autoload]
 
-DebugMonitor="*res://scenes/tools/debug_monitor.tscn"
 Global="*res://scenes/system/global.tscn"
+DebugMonitor="*res://scenes/tools/debug_monitor.tscn"
 
 [display]
 
