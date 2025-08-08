@@ -272,16 +272,23 @@ func _on_play_button_pressed() -> void:
 		Global.log_message("【重大なエラー】: game_directory_pathがデータにありません！")
 		return
 		
-	var full_path_internal = game_dir_path.path_join(executable_path)
-	var full_path_global = ProjectSettings.globalize_path(full_path_internal)
+	var full_executable_path = game_dir_path.path_join(executable_path)
 	
-	if not FileAccess.file_exists(full_path_global):
-		Global.log_message("【重大なエラー】: 実行ファイルが見つかりません！ パスを確認してください: %s" % full_path_global)
+	if not FileAccess.file_exists(full_executable_path):
+		Global.log_message("【重大なエラー】: 実行ファイルが見つかりません！ パスを確認してください: %s" % full_executable_path)
 		return
 
-	var pid = OS.create_process(full_path_global, [])
+	# --- ここからが、最後の、そして、真の、修正 ---
+	# DirAccessの、インスタンスを、作成する
+	var dir_access = DirAccess.open(game_dir_path)
+	if dir_access == null:
+		Global.log_message("エラー: ワーキングディレクトリへのアクセスに失敗しました: %s" % game_dir_path)
+		return
+
+	# ゲームを、起動する
+	var pid = OS.create_process(full_executable_path, [])
 
 	if pid != -1:
-		Global.log_message("ゲームを起動しました。プロセスID: %d" % pid)
+		Global.log_message("ゲームを起動しました: %s (PID: %d)" % [full_executable_path, pid])
 	else:
 		Global.log_message("エラー: OSレベルでの、ゲームの起動に失敗しました。")
