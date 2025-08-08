@@ -1,0 +1,27 @@
+{
+	"game_id": "RobotSurvivor",
+	"title": "Robot Survivor（テスト版）",
+	"description": "無敵バグ調査用のテストゲーム",
+	"developers": [
+		{ "last_name": "テスト", "first_name": "ユーザー", "grade": 0 }
+	],
+	"release_year": 2025,
+	"genre": ["アクション", "サバイバル"],
+	"min_players": 1,
+	"max_players": 1,
+	"difficulty": 2,
+	"play_time": 2,
+	"thumbnail_path": "thumbnail.png",
+	"background_path": "background.jpg",
+	"executable_path": "RobotSurvivor.exe",
+	"controller_support": true,
+	"lan_multiplayer_support": false,
+	"controls": {
+		"keyboard": {
+			"移動": "WASD",
+			"射撃": "マウス左クリック"
+		},
+		"gamepad": {}
+	},
+	"key_mapping": null
+}

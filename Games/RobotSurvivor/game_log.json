@@ -1,0 +1,24 @@
+{
+  "timestamp": "2025-08-08 22:23:42",
+  "working_directory": "/workspace/Games/RobotSurvivor",
+  "executable_path": "test_robot_survivor.py",
+  "command_line_args": [
+    "test_robot_survivor.py"
+  ],
+  "python_executable": "/usr/bin/python3",
+  "script_directory": "/workspace/Games/RobotSurvivor",
+  "relative_path_test": {
+    "current_dir_files": [
+      "Games",
+      "launcher_info.json",
+      "test_robot_survivor.py",
+      "thumbnail.png",
+      "game_log.json",
+      "RobotSurvivor.exe",
+      "background.jpg"
+    ],
+    "parent_dir_files": [
+      "RobotSurvivor"
+    ]
+  }
+}
