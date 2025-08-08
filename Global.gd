@@ -5,7 +5,7 @@ extends Node
 # --- アプリケーション情報 ---
 # この定数はランチャーの現在のバージョンを示す
 # 公式リリースする際には "-dev.X" の部分を削除する
-const APP_VERSION = "0.1.1-dev.1"
+const APP_VERSION = "0.1.1-dev.2"
 
 
 # --- グローバル変数 ---
@@ -108,7 +108,7 @@ func load_all_games_info() -> void:
 		# .exe実行時はパスの "res://" 接頭辞を手動で取り除く
 		if relative_games_dir.begins_with("res://"):
 			relative_games_dir = relative_games_dir.trim_prefix("res://")
-		
+
 		# .exeファイル自身の場所を基準にゲームフォルダへの絶対パスを組み立てる
 		var exe_dir = OS.get_executable_path().get_base_dir()
 		games_dir_path = exe_dir.path_join(relative_games_dir).simplify_path()
@@ -120,7 +120,7 @@ func load_all_games_info() -> void:
 	if games_dir_path.is_empty() or games_order.is_empty():
 		log_message(LogLevel.WARNING, "games_directory または games_order が未設定です。")
 		return
-	
+
 	log_message(LogLevel.INFO, "ゲーム情報のスキャンを開始します... 基準パス: " + games_dir_path)
 
 	# 表示順リストをもとに一つずつゲームフォルダを処理していく
@@ -142,7 +142,7 @@ func load_all_games_info() -> void:
 		if not FileAccess.file_exists(info_file_path):
 			log_message(LogLevel.WARNING, "%s が見つかりません。スキップします。" % info_file_path)
 			continue
-		
+
 		# ファイルを開き内容を文字列として読み込み閉じる
 		var file = FileAccess.open(info_file_path, FileAccess.READ)
 		var content = file.get_as_text()
@@ -153,17 +153,17 @@ func load_all_games_info() -> void:
 		if json.parse(content) != OK:
 			log_message(LogLevel.WARNING, "%s の解析に失敗しました。スキップします。" % info_file_path)
 			continue
-		
+
 		# 解析したデータを `game_data` 変数に格納する
 		game_data = json.get_data()
-		
+
 		# 後で使う可能性のある追加情報をデータに付与しておく
 		game_data["folder_name"] = game_folder_name
 		game_data["game_directory_path"] = game_folder_path
-		
+
 		# JSONの型ゆらぎを吸収する（数値や真偽値が文字列で来ても受け入れる）
 		coerce_game_data_types(game_folder_name, game_data)
-		
+
 		# 本来 `launcher_info.json` に含まれているべき必須キーのリスト
 		var required_keys = [
 			"game_id", "title", "description", "developers", "release_year",
@@ -171,7 +171,7 @@ func load_all_games_info() -> void:
 			"thumbnail_path", "background_path", "executable_path",
 			"controller_support", "lan_multiplayer_support", "controls"
 		]
-		
+
 		# 全ての必須キーが存在し中身が空でないかをチェックする
 		for key in required_keys:
 			if not game_data.has(key) or is_value_empty(game_data[key]):
@@ -235,7 +235,7 @@ func coerce_game_data_types(game_folder_name: String, data: Dictionary) -> void:
 			var dev = data["developers"][i]
 			if typeof(dev) == TYPE_DICTIONARY and dev.has("grade") and typeof(dev["grade"]) != TYPE_INT:
 				var gs := str(dev["grade"]).strip_edges()
-				var gi := int(dev["grade"]) 
+				var gi := int(dev["grade"])
 				data["developers"][i]["grade"] = gi
 				log_message(LogLevel.INFO, "'%s' の developers[%d].grade を数値に変換しました: '%s' -> %d" % [game_folder_name, i, gs, gi])
 

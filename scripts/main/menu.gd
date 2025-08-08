@@ -38,7 +38,7 @@ func _ready() -> void:
 	# Godotが次のフレームを処理するまで待機する
 	# これにより `populate_game_list` で生成されたノードが確実にシーンツリーに追加された状態になる
 	await get_tree().process_frame
-	
+
 	# ゲームリストのスクロールバーを見えなくするおまじない
 	# スクロール機能は維持したまま見た目だけを透明にする
 	var v_scroll_bar = %GameListContainer.get_v_scroll_bar()
@@ -46,7 +46,7 @@ func _ready() -> void:
 	v_scroll_bar.add_theme_stylebox_override("grabber", StyleBoxEmpty.new())
 	v_scroll_bar.add_theme_stylebox_override("grabber_highlight", StyleBoxEmpty.new())
 	v_scroll_bar.add_theme_stylebox_override("grabber_pressed", StyleBoxEmpty.new())
-	
+
 	# 画面の表示を最初の状態（0番目のゲームが選択された状態）に更新する
 	update_display()
 
@@ -57,7 +57,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	# もしゲームリストに一つもゲームがなければ何もせず処理を中断する
 	if game_list.get_child_count() == 0:
 		return
-	
+
 	# 入力イベントがマウスボタンのイベントかどうかを判定する
 	if event is InputEventMouseButton:
 		# もしマウスホイールが下に回されたら
@@ -65,19 +65,19 @@ func _unhandled_input(event: InputEvent) -> void:
 			# "ui_down"（下キー）が押された時と全く同じ処理を行う
 			current_selection_index = (current_selection_index + 1) % game_list.get_child_count()
 			update_display()
-			
+
 		# もしマウスホイールが上に回されたら
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.is_pressed():
 			# "ui_up"（上キー）が押された時と全く同じ処理を行う
 			current_selection_index = (current_selection_index - 1 + game_list.get_child_count()) % game_list.get_child_count()
 			update_display()
-	
+
 	# "ui_down"アクション（下キー）が押された瞬間に反応する
 	if event.is_action_pressed("ui_down"):
 		# 選択インデックスを一つ増やす `%` はリストの最後に到達したら先頭に戻るための計算
 		current_selection_index = (current_selection_index + 1) % game_list.get_child_count()
 		update_display()
-		
+
 	# "ui_up"アクション（上キー）が押された瞬間に反応する
 	if event.is_action_pressed("ui_up"):
 		# 選択インデックスを一つ減らす `+ game_list.get_child_count()` は0から-1になった時にリストの最後に移動するためのテクニック
@@ -92,7 +92,7 @@ func populate_game_list() -> void:
 	# もしリストに既に何かが表示されていたら一度全て削除して綺麗にする
 	for child in game_list.get_children():
 		child.queue_free()
-	
+
 	# サムネイルの「設計図」であるシーンファイルを読み込む
 	var thumbnail_scene: PackedScene = load("res://scenes/components/game_thumbnail.tscn")
 
@@ -111,7 +111,7 @@ func update_display() -> void:
 	# もしゲームリストが空っぽなら何もせず処理を中断する
 	if game_list.get_child_count() == 0:
 		return
-		
+
 	# 全てのサムネイルを一度チェックする
 	for i in range(game_list.get_child_count()):
 		var thumbnail = game_list.get_child(i)
@@ -122,14 +122,14 @@ func update_display() -> void:
 		else:
 			# それ以外のサムネイルは元の大きさに戻す
 			thumbnail.scale = Vector2(1.0, 1.0)
-	
+
 	# 選択されているサムネイルが必ず画面内に表示されるように自動でスクロールさせる
 	var selected_thumbnail = game_list.get_child(current_selection_index)
 	%GameListContainer.ensure_control_visible(selected_thumbnail)
 
 	# 現在選択されているゲームの完全なデータをGlobalから取得する
 	var selected_game_data: Dictionary = Global.all_games_data[current_selection_index]
-	
+
 	# --- タイトルとメタ情報の表示 ---
 	# `title` -> `game_id` -> `folder_name` の優先順位で表示するタイトルを決定する
 	var title_text = selected_game_data.get("title", "")
@@ -138,7 +138,7 @@ func update_display() -> void:
 	if title_text.is_empty():
 		title_text = selected_game_data.get("folder_name", "タイトル不明")
 	title_label.text = title_text
-	
+
 	# メタ情報（制作者、年、ジャンル）を一度クリアしてから組み立てる
 	meta_label.clear()
 	var developers: Array = selected_game_data.get("developers", [])
@@ -160,7 +160,7 @@ func update_display() -> void:
 			meta_label.append_text("制作者不明  ")
 	else:
 		meta_label.append_text("制作者不明  ")
-	
+
 	var release_year = selected_game_data.get("release_year")
 	if release_year != null and release_year > 0:
 		meta_label.append_text("%s  " % [release_year])
@@ -179,7 +179,7 @@ func update_display() -> void:
 			players_value_label.text = "%d" % [min_players]
 		else:
 			players_value_label.text = "%d〜%d" % [min_players, max_players]
-	
+
 	var difficulty: int = int(selected_game_data.get("difficulty", 0))
 	if difficulty > 0:
 		difficulty_gauge.show()
@@ -205,24 +205,24 @@ func update_display() -> void:
 
 	var multiplayer_support: bool = selected_game_data.get("lan_multiplayer_support", false)
 	multiplayer_value_label.text = "対応" if multiplayer_support else "非対応"
-	
+
 	# --- 詳細情報テキスト（DetailsText）の組み立て ---
 	details_text.clear()
-	
+
 	var description = selected_game_data.get("description", "")
 	if not description.is_empty():
 		details_text.append_text(description + "\n\n")
-	
+
 	details_text.push_font_size(28)
 	details_text.push_bold()
 	details_text.append_text("操作方法\n")
 	details_text.pop()
 	details_text.pop()
-	
+
 	var controls: Dictionary = selected_game_data.get("controls", {})
 	var keyboard_controls: Dictionary = controls.get("keyboard", {})
 	var gamepad_controls: Dictionary = controls.get("gamepad", {})
-	
+
 	if not keyboard_controls.is_empty() and not gamepad_controls.is_empty():
 		details_text.push_table(2)
 		details_text.push_cell()
@@ -287,7 +287,7 @@ func _on_play_button_pressed() -> void:
 
 	var selected_game_data: Dictionary = Global.all_games_data[current_selection_index]
 	var executable_path: String = selected_game_data.get("executable_path", "")
-	
+
 	if executable_path.is_empty():
 		Global.log_message(Global.LogLevel.ERROR, "このゲームには、実行ファイルが設定されていません！")
 		return
@@ -296,14 +296,14 @@ func _on_play_button_pressed() -> void:
 	if game_dir_path.is_empty():
 		Global.log_message(Global.LogLevel.ERROR, "game_directory_pathがデータにありません！")
 		return
-		
+
 	var full_executable_path = game_dir_path.path_join(executable_path)
-	
+
 	if not FileAccess.file_exists(full_executable_path):
 		Global.log_message(Global.LogLevel.ERROR, "実行ファイルが見つかりません！ パスを確認してください: %s" % full_executable_path)
 		return
 
-	# ゲームを起動する直前にワーキングディレクトリをそのゲームのフォルダに変更する
+	# ゲームを起動する（元の安全な方式）
 	var dir_access = DirAccess.open(".")
 	if dir_access:
 		var error_code = dir_access.change_dir(game_dir_path)
