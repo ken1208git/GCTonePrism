@@ -1,6 +1,7 @@
 {
   "games_directory": "res://../Games",
 	"games_order": [
+	"Only_Up",
 	"meiro3D",
 	"character_game",
 	"LEVEL_DEVIL",
