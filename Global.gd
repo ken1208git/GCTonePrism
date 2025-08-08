@@ -61,14 +61,29 @@ func load_all_games_info():
 		log_message("エラー: ランチャー設定が読み込まれていないため、ゲーム情報をスキャンできません。")
 		return
 
-	var games_dir_path: String = launcher_config.get("games_directory", "")
+	var games_dir_path: String
+	var relative_games_dir = launcher_config.get("games_directory", "")
+
+	if OS.has_feature("editor"):
+		games_dir_path = ProjectSettings.globalize_path(relative_games_dir)
+	else:
+		# --- ここからが、最後の、そして、真の、修正 ---
+		# .exeとして、実行されている場合、"res://"という、神の、言葉は、理解できない。
+		# もし、パスが、"res://"で、始まっていたら、その部分を、取り除いてあげる。
+		if relative_games_dir.begins_with("res://"):
+			relative_games_dir = relative_games_dir.trim_prefix("res://")
+		
+		var exe_dir = OS.get_executable_path().get_base_dir()
+		games_dir_path = exe_dir.path_join(relative_games_dir).simplify_path()
+		# --- ここまでが、最後の、そして、真の、修正 ---
+	
 	var games_order: Array = launcher_config.get("games_order", [])
 
 	if games_dir_path.is_empty() or games_order.is_empty():
 		log_message("警告: games_directory または games_order が未設定です。")
 		return
 	
-	log_message("ゲーム情報のスキャンを開始します...")
+	log_message("ゲーム情報のスキャンを開始します... 基準パス: " + games_dir_path)
 
 	for game_folder_name in games_order:
 		var game_folder_path = games_dir_path.path_join(game_folder_name)
@@ -94,11 +109,8 @@ func load_all_games_info():
 		
 		game_data = json.get_data()
 		
-		# --- ここからが、最後の修正 ---
-		# 保険として、フォルダ名と、ゲームフォルダへの完全なパスも、データに含めておく
 		game_data["folder_name"] = game_folder_name
 		game_data["game_directory_path"] = game_folder_path
-		# --- ここまでが、最後の修正 ---
 		
 		var required_keys = [
 			"game_id", "title", "description", "developers", "release_year",
