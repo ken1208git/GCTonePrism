@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3 uid="uid://dc14t4enyvxws"]
+[gd_scene load_steps=14 format=3 uid="uid://dc14t4enyvxws"]
 
 [ext_resource type="Script" path="res://scripts/main/menu.gd" id="1_grg70"]
 [ext_resource type="FontFile" uid="uid://dtvk1eu47wpx5" path="res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Heavy.otf" id="2_7hjxa"]
@@ -16,11 +16,17 @@ width = 856
 [sub_resource type="StyleBoxEmpty" id="StyleBoxEmpty_pxlff"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_1mo5t"]
-bg_color = Color(0, 0, 0, 0.392157)
+bg_color = Color(0, 0, 0, 0.588235)
 corner_radius_top_left = 16
 corner_radius_top_right = 16
 corner_radius_bottom_right = 16
 corner_radius_bottom_left = 16
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_5jr61"]
+bg_color = Color(0, 0, 0, 0.392157)
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_28xye"]
 bg_color = Color(0, 0, 0, 0.392157)
@@ -162,6 +168,7 @@ unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 size_flags_stretch_ratio = 2.0
+theme_override_constants/separation = 20
 
 [node name="Players" type="HBoxContainer" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/InfoPanel"]
 layout_mode = 2
@@ -278,6 +285,7 @@ custom_minimum_size = Vector2(0, 210)
 layout_mode = 2
 size_flags_vertical = 3
 size_flags_stretch_ratio = 7.0
+theme_override_styles/panel = SubResource("StyleBoxFlat_5jr61")
 
 [node name="DetailsText" type="RichTextLabel" parent="SafeArea/MainLayout/RightColumn/GameDetailsContainer/Padding/VBoxContainer/DetailsScrollContainer"]
 unique_name_in_owner = true

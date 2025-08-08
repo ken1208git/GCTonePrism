@@ -143,9 +143,9 @@ func update_display() -> void:
 	var max_players: int = selected_game_data.get("max_players", 0)
 	if min_players > 0 and max_players > 0:
 		if min_players == max_players:
-			players_value_label.text = "%d人" % [min_players]
+			players_value_label.text = "%d" % [min_players]
 		else:
-			players_value_label.text = "%d〜%d人" % [min_players, max_players]
+			players_value_label.text = "%d〜%d" % [min_players, max_players]
 	
 	var difficulty: int = selected_game_data.get("difficulty", 0)
 	if difficulty > 0:
@@ -162,7 +162,7 @@ func update_display() -> void:
 		playtime_gauge.show()
 		playtime_gauge.max_value = 3
 		playtime_gauge.value = playtime
-		playtime_value_label.text = ["短い", "ふつう", "長い"][playtime - 1]
+		playtime_value_label.text = ["～10", "10～30", "30～"][playtime - 1]
 	else:
 		playtime_gauge.hide()
 		playtime_value_label.text = ""
@@ -198,7 +198,7 @@ func update_display() -> void:
 		# 「キーボード」の、テキストサイズを、24に、設定する
 		details_text.push_font_size(24)
 		details_text.push_bold()
-		details_text.append_text("キーボード\n")
+		details_text.append_text("キーボード・マウス\n")
 		details_text.pop()
 		details_text.pop() # font_size
 		for action in keyboard_controls:
@@ -219,7 +219,7 @@ func update_display() -> void:
 		# 「キーボード」の、テキストサイズを、24に、設定する
 		details_text.push_font_size(24)
 		details_text.push_bold()
-		details_text.append_text("キーボード\n")
+		details_text.append_text("キーボード・マウス\n")
 		details_text.pop()
 		details_text.pop() # font_size
 		for action in keyboard_controls:
