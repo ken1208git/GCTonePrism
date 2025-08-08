@@ -11,10 +11,10 @@ project_style:
   ai_context:
     primary: README.md
     secondary:
-      - gemini_log.md
+      - cursor_log.md
     must_read_files:
       - README.md
-      - GEMINI.md
+      - CURSOR.md
       - project.godot
       - Global.gd
   guardrails:

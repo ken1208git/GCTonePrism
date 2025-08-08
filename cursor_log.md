@@ -1,4 +1,4 @@
-# GCTonePrism 開発ログ with Gemini
+# GCTonePrism 開発ログ with Cursor
 
 **目的:** このドキュメントは、Geminiとの対話を通じて`GCTonePrism`を開発する過程を、**可能な限り詳細に記録する**ためのものです。コードの変更だけでなく、設計に関する議論、発生した問題とその解決策、そして最終的な意思決定に至るまでの思考プロセスをすべて保存し、将来の参照性を最大化することを目的とします。
 
@@ -590,3 +590,25 @@
 
 - **結果:**
     - これにより、GCTonePrism v0.1.0は、機能、ビルド、ドキュメントの全てが揃った、最初の公式バージョンとして、完璧な形でリリースされた。
+
+## 2025-08-09
+
+### 1. Cursor初期設定とエディタ連携の整備 (chore)
+
+- 追加: `/.cursorignore`, `/.cursorrules`, `/.editorconfig`
+  - 目的: AIが読むべき文脈を安定させ、重いアセットを除外し、インデント/改行のスタイルを統一する。
+  - 主な内容:
+    - `.cursorignore`: フォント/画像/生成物(`export/`, `dist/`, `build/`)を除外。
+    - `.cursorrules`: 日本語、Godot 4.2前提、必読ファイル（`README.md`, `CURSOR.md`, `project.godot`, `Global.gd`）と副読（`cursor_log.md`）を定義。
+    - `.editorconfig`: GDScriptはタブインデント、Markdownはスペース2、UTF-8。
+
+### 2. Gemini命名からCursor命名へ移行 (docs)
+
+- リネーム: `GEMINI.md` → `CURSOR.md`, `gemini_log.md` → `cursor_log.md`
+- 参照更新: `.cursorrules` と `CURSOR.md` 内の参照を `cursor_log.md` へ統一。
+- ポリシー維持: 「コミット前に必ずログを追記する」原則をCursorでも踏襲。
+
+### 3. Godot CLIのPATH設定 (chore)
+
+- 手順: ユーザー指定の `Godot_v4.2.2-stable_win64.exe` のフォルダをUser PATHに追加し、`godot.cmd` を作成して `godot` コマンドで利用可能にした。
+- 確認: `godot --version` → `4.2.2.stable` を確認。
