@@ -604,7 +604,7 @@
 
 ### 2. Gemini命名からCursor命名へ移行 (docs)
 
-- リネーム: `GEMINI.md` → `CURSOR.md`, `gemini_log.md` → `cursor_log.md`
+- リネーム: `GEMINI.md` → `CURSOR_GUIDE.md`（さらに分かりやすい名称へ最終更新）, `gemini_log.md` → `cursor_log.md`
 - 参照更新: `.cursorrules` と `CURSOR.md` 内の参照を `cursor_log.md` へ統一。
 - ポリシー維持: 「コミット前に必ずログを追記する」原則をCursorでも踏襲。
 

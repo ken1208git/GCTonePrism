@@ -14,7 +14,7 @@ project_style:
       - cursor_log.md
     must_read_files:
       - README.md
-      - CURSOR.md
+      - CURSOR_GUIDE.md
       - project.godot
       - Global.gd
   guardrails:
