@@ -22,6 +22,12 @@ project_style:
     - Godot 4.2 API を前提にすること
     - ファイル/関数/クラス名はバッククォートで明示すること
     - コードの説明は短く、必要十分に
+    - コミットメッセージは日本語で分かりやすく（必要なら種別を付与）
+  workflow:
+    - コミット前に `cursor_log.md` を追記する
+    - コミット直後に `Global.gd` の `APP_VERSION` を次の dev へ更新する
+    - チャット起動時、直近コミットのバージョンと `APP_VERSION` が一致していたら即時に次 dev への更新を提案する
+    - 原則を変更/追加した場合は、`CURSOR_GUIDE.md` と `.cursorrules` の両方を必ず更新する
   do_not_edit:
     - assets/**
     - export/**

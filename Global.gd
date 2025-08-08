@@ -5,7 +5,7 @@ extends Node
 # --- アプリケーション情報 ---
 # この定数はランチャーの現在のバージョンを示す
 # 公式リリースする際には "-dev.X" の部分を削除する
-const APP_VERSION = "0.1.0"
+const APP_VERSION = "0.1.1-dev.1"
 
 
 # --- グローバル変数 ---
@@ -161,6 +161,9 @@ func load_all_games_info() -> void:
 		game_data["folder_name"] = game_folder_name
 		game_data["game_directory_path"] = game_folder_path
 		
+		# JSONの型ゆらぎを吸収する（数値や真偽値が文字列で来ても受け入れる）
+		coerce_game_data_types(game_folder_name, game_data)
+		
 		# 本来 `launcher_info.json` に含まれているべき必須キーのリスト
 		var required_keys = [
 			"game_id", "title", "description", "developers", "release_year",
@@ -192,6 +195,49 @@ func load_all_games_info() -> void:
 		log_message(LogLevel.INFO, "  > 「%s」の情報を読み込みました。" % game_data.get("title", game_folder_name))
 
 	log_message(LogLevel.INFO, "ゲーム情報のスキャンが完了しました。合計 %d 件のゲームを読み込みました。" % all_games_data.size())
+
+
+# 値の型を期待通りに整える（部員の入力ミスがあっても落とさない）
+func coerce_game_data_types(game_folder_name: String, data: Dictionary) -> void:
+	# 数値であるべきキー
+	var numeric_keys := [
+		"release_year", "min_players", "max_players", "difficulty", "play_time"
+	]
+	for key in numeric_keys:
+		if data.has(key):
+			var original = data[key]
+			if typeof(original) != TYPE_INT:
+				var s := str(original).strip_edges()
+				var coerced := int(original)
+				data[key] = coerced
+				log_message(LogLevel.INFO, "'%s' (%s) の '%s' を数値に変換しました: '%s' -> %d" % [game_folder_name, data.get("title", game_folder_name), key, s, coerced])
+
+	# 真偽であるべきキー
+	var bool_keys := ["controller_support", "lan_multiplayer_support"]
+	for key in bool_keys:
+		if data.has(key):
+			var original_b = data[key]
+			if typeof(original_b) != TYPE_BOOL:
+				var sb := str(original_b).strip_edges().to_lower()
+				var coerced_b := false
+				if sb in ["true", "1", "yes", "on"]:
+					coerced_b = true
+				elif sb in ["false", "0", "no", "off", ""]:
+					coerced_b = false
+				else:
+					coerced_b = bool(original_b)
+				data[key] = coerced_b
+				log_message(LogLevel.INFO, "'%s' の '%s' を真偽値に変換しました: '%s' -> %s" % [game_folder_name, key, sb, str(coerced_b)])
+
+	# 開発者配列の grade を数値に整形
+	if data.has("developers") and typeof(data["developers"]) == TYPE_ARRAY:
+		for i in data["developers"].size():
+			var dev = data["developers"][i]
+			if typeof(dev) == TYPE_DICTIONARY and dev.has("grade") and typeof(dev["grade"]) != TYPE_INT:
+				var gs := str(dev["grade"]).strip_edges()
+				var gi := int(dev["grade"]) 
+				data["developers"][i]["grade"] = gi
+				log_message(LogLevel.INFO, "'%s' の developers[%d].grade を数値に変換しました: '%s' -> %d" % [game_folder_name, i, gs, gi])
 
 
 # プロジェクト全体で利用する新しい公式ログ関数

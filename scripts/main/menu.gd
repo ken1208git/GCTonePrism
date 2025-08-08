@@ -172,15 +172,15 @@ func update_display() -> void:
 		meta_label.append_text("ジャンル: %s" % [", ".join(genre_list)])
 
 	# --- 概要情報パネル（InfoPanel）の表示 ---
-	var min_players: int = selected_game_data.get("min_players", 0)
-	var max_players: int = selected_game_data.get("max_players", 0)
+	var min_players: int = int(selected_game_data.get("min_players", 0))
+	var max_players: int = int(selected_game_data.get("max_players", 0))
 	if min_players > 0 and max_players > 0:
 		if min_players == max_players:
 			players_value_label.text = "%d" % [min_players]
 		else:
 			players_value_label.text = "%d〜%d" % [min_players, max_players]
 	
-	var difficulty: int = selected_game_data.get("difficulty", 0)
+	var difficulty: int = int(selected_game_data.get("difficulty", 0))
 	if difficulty > 0:
 		difficulty_gauge.show()
 		difficulty_gauge.max_value = 3
@@ -190,7 +190,7 @@ func update_display() -> void:
 		difficulty_gauge.hide()
 		difficulty_value_label.text = ""
 
-	var playtime: int = selected_game_data.get("play_time", 0)
+	var playtime: int = int(selected_game_data.get("play_time", 0))
 	if playtime > 0:
 		playtime_gauge.show()
 		playtime_gauge.max_value = 3

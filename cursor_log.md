@@ -621,3 +621,20 @@
 - 仕様準拠: `Global.gd` の検証ロジックに合わせる（必須キー/型/存在/ID一致）
 - 受け入れ基準: 新規登録～保存、検証エラーの明確表示、既存編集がGUIで完了
 - 参照: Issue #37
+
+### 5. JSONの型ゆらぎに対する防御実装とUI安全化 (fix)
+
+- 実装: `Global.gd` に `coerce_game_data_types()` を追加し、以下を自動変換＋INFOログ出力
+  - 数値: `release_year`, `min_players`, `max_players`, `difficulty`, `play_time`, `developers[].grade`
+  - 真偽: `controller_support`, `lan_multiplayer_support`
+- UI安全化: `scripts/main/menu.gd` で `int(...)` により `difficulty`/`play_time`/`min`/`max` を安全に処理
+- ドキュメント: `README.md` に「JSONはUTF-8で保存」を追記
+- 動作確認: ヘッドレス実行で型変換のINFOが多数出力され、UI更新エラーが解消されることを確認
+
+### 6. バージョン運用ルールと番号更新 (chore)
+
+- ルール追加: 
+  - コミット前に`cursor_log.md`追記
+  - コミット直後に `Global.APP_VERSION` を次の `dev` へ更新
+  - チャット起動時、直近コミットのバージョンと `APP_VERSION` が一致していたら即時に `APP_VERSION` 更新を提案
+- 番号更新: `Global.gd` の `APP_VERSION` を `0.1.1-dev.1` に更新
