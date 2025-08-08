@@ -1,0 +1,29 @@
+# Cursor に読み込ませないファイル群（コード理解に不要な大容量や生成物）
+
+# Godot メタ/生成物
+.godot/
+**/*.import
+*.translation
+
+# エクスポート/ビルド成果物
+export/**
+build/**
+dist/**
+**/*.exe
+**/*.pck
+**/*.zip
+
+# 大容量アセット（AIの文脈には不要）
+assets/fonts/**
+assets/images/**
+icon.png
+
+# OS一時ファイル
+**/.DS_Store
+**/Thumbs.db
+
+# 予防（他プロジェクトと併用時）
+node_modules/**
+.venv/**
+__pycache__/**
+
