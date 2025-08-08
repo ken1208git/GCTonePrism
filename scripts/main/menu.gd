@@ -45,6 +45,22 @@ func _unhandled_input(event: InputEvent) -> void:
 	if game_list.get_child_count() == 0:
 		return
 	
+	# --- ここからが、最後の、そして、真の、修正 ---
+	# もし、入力が、マウスボタンの、イベントで、
+	if event is InputEventMouseButton:
+		# かつ、それが、マウスホイールを、下に、回した、イベントなら
+		if event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.is_pressed():
+			# "ui_down"（下キー）が、押された時と、全く、同じ、処理を、行う
+			current_selection_index = (current_selection_index + 1) % game_list.get_child_count()
+			update_display()
+			
+		# かつ、それが、マウスホイールを、上に、回した、イベントなら
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.is_pressed():
+			# "ui_up"（上キー）が、押された時と、全く、同じ、処理を、行う
+			current_selection_index = (current_selection_index - 1 + game_list.get_child_count()) % game_list.get_child_count()
+			update_display()
+	# --- ここまでが、最後の、そして、真の、修正 ---
+	
 	if event.is_action_pressed("ui_down"):
 		current_selection_index = (current_selection_index + 1) % game_list.get_child_count()
 		update_display()

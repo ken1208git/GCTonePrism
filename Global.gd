@@ -3,7 +3,7 @@
 extends Node
 
 # --- アプリケーション情報 ---
-const APP_VERSION = "0.1.0-dev.15"
+const APP_VERSION = "0.1.0-dev.16"
 
 
 # --- グローバル変数 ---

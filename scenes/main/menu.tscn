@@ -1,4 +1,4 @@
-[gd_scene load_steps=14 format=3 uid="uid://dc14t4enyvxws"]
+[gd_scene load_steps=16 format=3 uid="uid://dc14t4enyvxws"]
 
 [ext_resource type="Script" path="res://scripts/main/menu.gd" id="1_grg70"]
 [ext_resource type="FontFile" uid="uid://dtvk1eu47wpx5" path="res://assets/fonts/SourceHanSansJP/SourceHanSansJP-Heavy.otf" id="2_7hjxa"]
@@ -27,6 +27,7 @@ bg_color = Color(0, 0, 0, 0.392157)
 corner_radius_top_left = 5
 corner_radius_top_right = 5
 corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_28xye"]
 bg_color = Color(0, 0, 0, 0.392157)
@@ -48,6 +49,14 @@ corner_radius_top_left = 10
 corner_radius_top_right = 10
 corner_radius_bottom_right = 10
 corner_radius_bottom_left = 10
+
+[sub_resource type="Gradient" id="Gradient_jmtcb"]
+colors = PackedColorArray(0, 0, 0, 1, 0, 0, 0, 0)
+
+[sub_resource type="GradientTexture2D" id="GradientTexture2D_6pvdu"]
+gradient = SubResource("Gradient_jmtcb")
+fill_from = Vector2(0, 1)
+fill_to = Vector2(0, 0)
 
 [node name="Menu" type="Control"]
 layout_mode = 3
@@ -317,5 +326,36 @@ theme_override_styles/pressed = SubResource("StyleBoxFlat_dt5dl")
 icon = ExtResource("4_1oq0c")
 text_overrun_behavior = 1
 icon_alignment = 1
+
+[node name="ControlHintRect" type="TextureRect" parent="."]
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = -50.0
+grow_horizontal = 2
+grow_vertical = 0
+texture = SubResource("GradientTexture2D_6pvdu")
+
+[node name="MarginContainer" type="MarginContainer" parent="ControlHintRect"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 10
+
+[node name="ControlHintLabel" type="Label" parent="ControlHintRect/MarginContainer"]
+layout_mode = 2
+size_flags_vertical = 8
+theme_override_fonts/font = ExtResource("3_t88rp")
+theme_override_font_sizes/font_size = 24
+text = "ゲーム選択: ↑↓ or マウスホイール　ゲーム起動: Enter"
+horizontal_alignment = 2
 
 [connection signal="pressed" from="SafeArea/MainLayout/RightColumn/GameDetailsContainer/PlayButton" to="." method="_on_play_button_pressed"]
