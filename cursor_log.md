@@ -612,3 +612,12 @@
 
 - 手順: ユーザー指定の `Godot_v4.2.2-stable_win64.exe` のフォルダをUser PATHに追加し、`godot.cmd` を作成して `godot` コマンドで利用可能にした。
 - 確認: `godot --version` → `4.2.2.stable` を確認。
+
+### 4. Issue作成: GUI設定ツール（dialog型）(enhancement)
+
+- 目的: `launcher_config.json` と `launcher_info.json` の作成・編集・検証・登録をGUIで一括支援
+- 提案: 軽量なダイアログ型の独立ツール（管理者用）。Python + Tkinter を第一候補
+- MVP: games_directory設定、games_order並び替え、登録ウィザード、全体ヘルスチェック
+- 仕様準拠: `Global.gd` の検証ロジックに合わせる（必須キー/型/存在/ID一致）
+- 受け入れ基準: 新規登録～保存、検証エラーの明確表示、既存編集がGUIで完了
+- 参照: Issue #37
