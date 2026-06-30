@@ -20,7 +20,8 @@ namespace TonePrism.Manager.Shell.GameForm
     /// - 人数/難易度/時間/年を <c>int?</c> 直持ちにしたことで WinForms の null 保護スナップショット glue は不要に。
     /// - 範囲外の破損 DB 値 (人数 0/200 等) は load 時に [1,99] 等へ clamp。旧は「clamp 値を書き戻さない」snapshot 保護が
     ///   あったが、それを再現するとスナップショット復活で int? 化の意味が消えるため PR1 では簡素化 (= 破損は保存時に healing)。
-    /// - 外部画像取込 (gameFolder 外の画像選択 → 保存時コピー) は **#324 PR4 送り**。PR1 は既存パスの表示↔相対化のみ扱う。
+    /// - 外部画像 (gameFolder 外の選択) は保存時に <c>.toneprism/</c> へ取り込む (#386)。<see cref="CommitToVersion"/> は外部画像を
+    ///   null 化せず絶対のまま保持し (<c>ToRelOrKeepExternal</c>)、取り込みオーケストレーションは EditGamePage が全版に対して行う。
     /// 保存オーケストレーション(旧 btnOK_Click) は EditGamePage 側に置き、抽出済み service を呼ぶ。
     /// </summary>
     public class EditViewModel : GameFormViewModel

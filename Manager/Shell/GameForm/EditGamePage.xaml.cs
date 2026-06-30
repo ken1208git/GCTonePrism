@@ -195,6 +195,20 @@ namespace TonePrism.Manager.Shell.GameForm
                 return;
             }
 
+            // 4b. (#386 指摘2) 全版の実行ファイルが内部 (非 null) か検証。非選択版に外部 exe が commit されていると ToRel で
+            //     null 化され、選択版のみ見る手順2のガードを通過し、高コストな rename を実行した後に DB で NOT NULL 違反で
+            //     落ちる。画像は手順7で全版取り込みするが exe は取り込み非対応なので、rename 前にここで弾く。
+            var missingExe = vm.Versions.Where(x => x != null && string.IsNullOrEmpty(x.ExecutablePath)).ToList();
+            if (missingExe.Count > 0)
+            {
+                WinForms.MessageBox.Show(Owner,
+                    "以下のバージョンの実行ファイルが未設定、またはゲームフォルダ外を指しています:\n\n  " +
+                    string.Join("\n  ", missingExe.Select(x => x.Version ?? "(未設定)")) +
+                    "\n\nバージョン管理で該当版を選び、ゲームフォルダ内の実行ファイルを指定してから保存してください。",
+                    "実行ファイルの入力エラー (" + missingExe.Count + " 件)", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
+                return;
+            }
+
             // 5. アクティブ版 (= ランチャー起動対象) の暗黙切替確認。
             var selected = vm.SelectedVersion;
             if (selected != null && vm.InitialSelectedVersionId.HasValue && selected.Id != vm.InitialSelectedVersionId.Value)
@@ -213,27 +227,30 @@ namespace TonePrism.Manager.Shell.GameForm
             // 7. (#386) 全版の外部画像を .toneprism/ へ取り込み、版オブジェクトのパスを相対化する。CommitToVersion が
             //    外部画像を絶対のまま残すので、選択版だけでなく全版を走査する (指摘1: 版切替で非選択版の外部画像が
             //    silent loss するのを防ぐ)。取り込み先フォルダは rename 前のディスク leaf (OriginalVersionByDbId)。後段の
-            //    gameId/版 rename が .toneprism ごとフォルダ移動 + 相対パス prefix 書換を行うため整合する。取り込み済は
-            //    importedImages に記録し、以降の失敗 (rename 衝突/失敗・DB 失敗) で best-effort 掃除する (役割固定名ゆえ
-            //    残っても次回保存で上書きされ self-heal)。
+            //    gameId/版 rename が .toneprism ごとフォルダ移動 + 相対パス prefix 書換を行うため整合する。
+            //    abort 時も取り込みファイルは削除しない: 削除すると非選択版の相対パスが dangling になり retry で silent loss
+            //    する (GameImageSaveImporter の doc 参照)。残せば retry でその実体を解決して保存成功・放棄時の orphan は無害。
+            //    コピーは同期 (画像は通常小サイズで軽量。多版×大画像で体感が出るなら ProcessingDialog 化を検討)。
             string diskGameId = vm.OriginalGame.GameId;
-            var importedImages = new List<string>();
             try
             {
                 foreach (var ver in vm.Versions)
                 {
                     if (ver == null) continue;
-                    string dv = vm.OriginalVersionByDbId.TryGetValue(ver.Id, out var d) ? d : ver.Version;
-                    if (string.IsNullOrWhiteSpace(dv)) continue;
-                    ver.ThumbnailPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.ThumbnailPath, diskGameId, dv, GameImageAssetHelper.ImageRole.Thumbnail, out string ct);
-                    if (ct != null) importedImages.Add(ct);
-                    ver.BackgroundPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.BackgroundPath, diskGameId, dv, GameImageAssetHelper.ImageRole.Background, out string cb);
-                    if (cb != null) importedImages.Add(cb);
+                    if (!vm.OriginalVersionByDbId.TryGetValue(ver.Id, out var dv) || string.IsNullOrWhiteSpace(dv))
+                    {
+                        // (#386 指摘5) snapshot 欠落版は取り込み先 leaf が決まらない (新 leaf に作ると後続 rename と衝突)
+                        // ため skip + Warn (VersionFolderRenameService の defensive と挙動を揃える。現状 LoadVersions のみが
+                        // snapshot を populate するため到達しない)。
+                        Logger.Warn("[EditGamePage] (#386) snapshot 欠落 version id=" + ver.Id + " ('" + (ver.Version ?? "(null)") + "') の画像取り込みを skip");
+                        continue;
+                    }
+                    ver.ThumbnailPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.ThumbnailPath, diskGameId, dv, GameImageAssetHelper.ImageRole.Thumbnail);
+                    ver.BackgroundPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.BackgroundPath, diskGameId, dv, GameImageAssetHelper.ImageRole.Background);
                 }
             }
             catch (Exception imgEx)
             {
-                GameImageSaveImporter.CleanupBestEffort(importedImages);
                 WinForms.MessageBox.Show(Owner, "画像の取り込みに失敗しました。\n\n" + imgEx.Message,
                     "画像取り込みエラー", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
                 return;
@@ -286,7 +303,7 @@ namespace TonePrism.Manager.Shell.GameForm
             var plan = verSvc.BuildPlan(vm.GameFolder, vm.Versions, vm.OriginalVersionByDbId);
             if (plan.HasCollision)
             {
-                GameImageSaveImporter.CleanupBestEffort(importedImages);   // (#386) 取り込み済画像を掃除して中断
+                // (#386) 取り込み済画像は削除しない (削除すると非選択版の相対パスが dangling になり retry で silent loss)。
                 WinForms.MessageBox.Show(Owner, plan.CollisionMessage, "フォルダ衝突", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
                 return;
             }
@@ -304,7 +321,7 @@ namespace TonePrism.Manager.Shell.GameForm
                 }
                 if (exec != null && exec.Failed)
                 {
-                    GameImageSaveImporter.CleanupBestEffort(importedImages);   // (#386) rollback 後は取り込み位置に戻っているので掃除
+                    // (#386) 取り込み済画像は削除しない (同上: retry での silent loss を避ける)。
                     WinForms.MessageBox.Show(Owner, exec.ErrorMessage, "フォルダリネーム失敗", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Error);
                     return;
                 }
@@ -324,9 +341,8 @@ namespace TonePrism.Manager.Shell.GameForm
             {
                 int rolledBack, rollbackFailures;
                 verSvc.Rollback(completed, vm.OriginalVersionByDbId, out rolledBack, out rollbackFailures);
-                // (#386) DB 保存に失敗したので、この保存で取り込んだ画像を best-effort で掃除 (版 rename rollback 後 = 取り込み
-                // 位置に戻っているので no-gameId-rename ケースは確実に消える。gameId rename 済ケースは別位置で skip = self-heal)。
-                GameImageSaveImporter.CleanupBestEffort(importedImages);
+                // (#386) 取り込み済画像は削除しない (削除すると非選択版の相対パスが dangling になり、ロック解除後の
+                // retry で欠落ファイルを指す相対パスが保存成功してしまう = silent loss。残せば retry が実体を解決する)。
                 // (#382 (iii)) gameId rename は step6 で独立コミット済のため、ここで巻き戻るのは版フォルダ rename だけ。
                 // gameId を変えていた場合に「DB は更新前」と表示すると嘘になるので状態を正確に伝える
                 // (完全な rollback / transaction 統合は #382 で継続)。
