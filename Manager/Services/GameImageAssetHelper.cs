@@ -5,7 +5,7 @@ namespace TonePrism.Manager.Services
 {
     /// <summary>
     /// (#386) ゲームのサムネイル / 背景画像を版フォルダ配下の予約名前空間 <c>&lt;version&gt;/.toneprism/</c> へ
-    /// 取り込む共有ヘルパー。ADD/EDIT の WPF 画面 (#242/#324) が共通で使う。guide の
+    /// 取り込む共有ヘルパー。ADD/EDIT の WPF 画面 (#242/#324) で共用する想定の共有基盤 (本 PR の配線は EDIT のみ、ADD は #324)。guide の
     /// <see cref="IntroGuideAssetHelper"/> と同流儀 (コピー取り込み + 相対パス保存 + 再利用) だが、games は
     /// <b>役割正規化</b>が肝: コピー先名は元ファイル名でなく役割固定名 <c>thumbnail.&lt;ext&gt;</c> /
     /// <c>background.&lt;ext&gt;</c> にする (予測可能・1 役割 1 ファイル)。

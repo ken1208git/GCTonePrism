@@ -232,6 +232,7 @@ namespace TonePrism.Manager.Shell.GameForm
             //    する (GameImageSaveImporter の doc 参照)。残せば retry でその実体を解決して保存成功・放棄時の orphan は無害。
             //    コピーは同期 (画像は通常小サイズで軽量。多版×大画像で体感が出るなら ProcessingDialog 化を検討)。
             string diskGameId = vm.OriginalGame.GameId;
+            bool imagesImported = false;
             try
             {
                 foreach (var ver in vm.Versions)
@@ -241,12 +242,15 @@ namespace TonePrism.Manager.Shell.GameForm
                     {
                         // (#386 指摘5) snapshot 欠落版は取り込み先 leaf が決まらない (新 leaf に作ると後続 rename と衝突)
                         // ため skip + Warn (VersionFolderRenameService の defensive と挙動を揃える。現状 LoadVersions のみが
-                        // snapshot を populate するため到達しない)。
+                        // snapshot を populate するため到達しない。round3 指摘4: 将来 add-version UI を入れると、外部画像を持つ
+                        // snapshot 欠落版が skip され絶対パスのまま保存される footgun になるため、その際は exe ガード同様
+                        // 「外部画像が残る版はブロック」方向へ揃えること)。
                         Logger.Warn("[EditGamePage] (#386) snapshot 欠落 version id=" + ver.Id + " ('" + (ver.Version ?? "(null)") + "') の画像取り込みを skip");
                         continue;
                     }
-                    ver.ThumbnailPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.ThumbnailPath, diskGameId, dv, GameImageAssetHelper.ImageRole.Thumbnail);
-                    ver.BackgroundPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.BackgroundPath, diskGameId, dv, GameImageAssetHelper.ImageRole.Background);
+                    ver.ThumbnailPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.ThumbnailPath, diskGameId, dv, GameImageAssetHelper.ImageRole.Thumbnail, out bool t);
+                    ver.BackgroundPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.BackgroundPath, diskGameId, dv, GameImageAssetHelper.ImageRole.Background, out bool b);
+                    imagesImported |= t || b;
                 }
             }
             catch (Exception imgEx)
@@ -256,7 +260,9 @@ namespace TonePrism.Manager.Shell.GameForm
                 return;
             }
 
-            bool assetsChanged = false;
+            // (#386 round3 指摘1) 画像取り込みは games/ への新バイト書込なので、rename が無くてもアセットバックアップ対象にする。
+            // これが無いと「画像だけ差し替えて保存」が DB-only バックアップになり、その世代から復元すると DB が指す画像が欠落する。
+            bool assetsChanged = imagesImported;
 
             // 8. gameId rename (フォルダ Move + DB)。GameIdRenameService に委譲。
             string oldGameId = vm.OriginalGame.GameId;

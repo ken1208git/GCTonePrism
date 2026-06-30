@@ -44,40 +44,45 @@ namespace TonePrism.Manager.Tests
         }
 
         [Fact]
-        public void ExternalAbsolute_Imported_ReturnsForwardSlashRelative_KeepsSource()
+        public void ExternalAbsolute_Imported_ReturnsForwardSlashRelative_KeepsSource_FlagsImported()
         {
             string src = ExternalImage("cover.png", new byte[] { 1, 2, 3 });
 
-            string rel = GameImageSaveImporter.ImportIfExternalToRelative(src, "g1", "v1.0.0", Role.Thumbnail);
+            string rel = GameImageSaveImporter.ImportIfExternalToRelative(src, "g1", "v1.0.0", Role.Thumbnail, out bool imported);
 
             Assert.Equal("v1.0.0/.toneprism/thumbnail.png", rel);   // gameFolder 基準・forward slash
+            Assert.True(imported);                                  // 新バイト書込 = assetsChanged 対象
             string abs = Path.Combine(_root, "games", "g1", "v1.0.0", ".toneprism", "thumbnail.png");
             Assert.True(File.Exists(abs));
             Assert.True(File.Exists(src));   // copy-not-move
         }
 
         [Fact]
-        public void RelativePath_ReturnedUnchanged()
+        public void RelativePath_ReturnedUnchanged_NotImported()
         {
             // 既に相対 (= 内部・DB 保存形) のパスは取り込まず素通り。
-            string result = GameImageSaveImporter.ImportIfExternalToRelative("v1.0.0/.toneprism/thumbnail.png", "g2", "v1.0.0", Role.Thumbnail);
+            string result = GameImageSaveImporter.ImportIfExternalToRelative("v1.0.0/.toneprism/thumbnail.png", "g2", "v1.0.0", Role.Thumbnail, out bool imported);
             Assert.Equal("v1.0.0/.toneprism/thumbnail.png", result);
+            Assert.False(imported);
         }
 
         [Fact]
-        public void InternalAbsolute_RelativizedToForwardSlash()
+        public void InternalAbsolute_RelativizedToForwardSlash_NotImported()
         {
             // gameFolder 内の絶対パス (防御経路) は相対化して返す (取り込みはしない)。
             string internalAbs = Path.Combine(_root, "games", "g3", "v2.0.0", ".toneprism", "background.jpg");
-            string result = GameImageSaveImporter.ImportIfExternalToRelative(internalAbs, "g3", "v2.0.0", Role.Background);
+            string result = GameImageSaveImporter.ImportIfExternalToRelative(internalAbs, "g3", "v2.0.0", Role.Background, out bool imported);
             Assert.Equal("v2.0.0/.toneprism/background.jpg", result);
+            Assert.False(imported);
         }
 
         [Fact]
-        public void EmptyOrNull_ReturnedUnchanged()
+        public void EmptyOrNull_ReturnedUnchanged_NotImported()
         {
-            Assert.Null(GameImageSaveImporter.ImportIfExternalToRelative(null, "g4", "v1.0.0", Role.Background));
-            Assert.Equal("", GameImageSaveImporter.ImportIfExternalToRelative("", "g4", "v1.0.0", Role.Background));
+            Assert.Null(GameImageSaveImporter.ImportIfExternalToRelative(null, "g4", "v1.0.0", Role.Background, out bool i1));
+            Assert.False(i1);
+            Assert.Equal("", GameImageSaveImporter.ImportIfExternalToRelative("", "g4", "v1.0.0", Role.Background, out bool i2));
+            Assert.False(i2);
         }
     }
 }

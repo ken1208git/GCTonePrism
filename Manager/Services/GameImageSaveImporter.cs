@@ -31,9 +31,13 @@ namespace TonePrism.Manager.Services
         /// <param name="gameId">取り込み先のゲーム ID (rename 前 = ディスク上の現 ID)。</param>
         /// <param name="diskVersion">取り込み先の版文字列 (rename 前 = ディスク上の現 leaf)。</param>
         /// <param name="role">thumbnail / background。</param>
+        /// <param name="imported">実際に外部画像を <c>.toneprism/</c> へコピーした場合 true (= games/ に新バイト書込。
+        /// caller は assetsChanged を立ててアセットバックアップ対象にする。round3 指摘1: 画像のみ編集で rename 無しの保存が
+        /// DB-only バックアップになり、その世代から復元すると画像欠落する gap を防ぐ)。相対/内部/空は false。</param>
         public static string ImportIfExternalToRelative(string versionImagePath, string gameId, string diskVersion,
-            GameImageAssetHelper.ImageRole role)
+            GameImageAssetHelper.ImageRole role, out bool imported)
         {
+            imported = false;
             if (string.IsNullOrWhiteSpace(versionImagePath)) return versionImagePath;
             if (!Path.IsPathRooted(versionImagePath)) return versionImagePath;   // 相対 = 既に内部 (DB 保存形)、そのまま
 
@@ -41,6 +45,7 @@ namespace TonePrism.Manager.Services
             if (PathConversionHelper.IsPathInside(gameFolder, versionImagePath))
                 return PathConversionHelper.ToRelativePath(gameFolder, versionImagePath).Replace('\\', '/');   // 内部絶対 → 相対化 (防御的)
 
+            imported = true;   // 外部 = 必ずコピー (外部パスが取り込み先 = gameFolder 内に一致することは無い)
             return GameImageAssetHelper.ImportImage(gameId, diskVersion, role, versionImagePath);   // 外部 → 取り込み (forward slash 相対)
         }
     }
