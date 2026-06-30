@@ -2311,6 +2311,16 @@ PR #150 で dir rename (`GCTonePrism_Launcher/` → `Launcher/`) に連動して
 
 ## Manager（管理ソフト）
 
+### [Manager v0.32.0] - 2026-06-30
+
+#### Added / Changed — ゲーム画像を `.toneprism/` 予約名前空間へ取り込む共有基盤 + EDIT の外部画像取り込み解禁（`feature/manager-image-toneprism`、#386）
+
+- **画像取り込み共有ヘルパー `GameImageAssetHelper` を新設**（#386）: ゲームのサムネ/背景画像を版フォルダ配下の予約名前空間 `<version>/.toneprism/thumbnail.<ext>` / `background.<ext>` へコピー取り込みする。**役割正規化**（元ファイル名でなく役割固定名）・**copy-not-move**（元画像は残す）・予約名前空間で game 本体ファイルと物理分離（役割名の clobber 防止）。guide の `IntroGuideAssetHelper` と同流儀。ADD/EDIT WPF 双方で共用する（#242 の共有化方針）。Launcher 読み出しは相対サブフォルダ解決のため変更不要。
+- **ゲーム編集（EDIT）で外部画像の取り込みを解禁**（#386）: 旧実装は「ゲームフォルダ外の画像はブロック（フォルダ内に置いてから選び直して）」だったのを、保存時に `.toneprism/` へ自動取り込みするように置換。取り込みロジックは VM 非依存の共有 service `GameImageSaveImporter` として抽出（ADD/EDIT 共通の保存ロジック共有化＝#242 の起点）。取り込みは `CommitToVersion`（相対化）の前に実行し、`.toneprism/` は版 leaf 直下なので既存の `ToRel` + 版 rename の prefix 書換（`VersionFolderRenameService.ReplaceVersionPrefix`）とも整合（gameId/版 rename にも追従）。未変更の内部画像は素通り、保存失敗時は取り込み画像を best-effort 掃除（役割固定名ゆえ残っても次回保存で上書きされ self-heal）。**絶対外部パス保存（他 PC で壊れる footgun）を廃止**。exe の外部取り込みは本 PR 対象外（画像のみ）。
+- **拡張子変更時の旧役割ファイル残置**（png→jpg で `thumbnail.png` が残る）は **#348** と地続きで本 PR 対象外（表示は DB の保存パスが指す実体で解決＝壊れない。dead bytes が残るのみ）。
+- **test infra**: `PathManager.SetBaseDirectoryForTest`（静的 `_baseDirectory` 差し替え）を使う test class を `[Collection("PathManagerStatic")]` で直列化し、並列実行の base dir クロバー race を解消（新テスト追加で顕在化、既存の潜在 flaky も同時に解消）。
+- bump 判断: 新機能（画像取り込み基盤 + EDIT 外部画像解禁。破壊的変更 / DB スキーマ変更なし）。**minor（v0.31.1 → v0.32.0）**。Launcher 変更なし。**本番の画像書き込み凍結が完全に解けるのは ADD（#324）も対応した Bundle リリース時**。
+
 ### [Manager v0.31.1] - 2026-06-29
 
 #### Fixed / Changed — ゲーム編集の未保存離脱ガード + 確認ダイアログのモダン化（`fix/manager-edit-unsaved-guard`、#383）
