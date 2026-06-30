@@ -17,6 +17,7 @@ namespace TonePrism.Manager.Tests
     /// (c) が崩れると「未保存なのに無確認で破棄」= ガードが防ぎたい事故そのものになるため重点的に固める。
     /// VersionDeletionTests と同じ #239 方針 (PathManager 非依存の一時 DB)。
     /// </summary>
+    [Collection("PathManagerStatic")]   // (#386) 静的 PathManager base dir 共有のため直列化
     public class EditViewModelDirtyTests : IDisposable
     {
         private readonly string _root;   // EditViewModel ctor が PathManager.GetGameFolder を引くため一時 install dir を向ける。
