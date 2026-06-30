@@ -8,7 +8,7 @@ namespace TonePrism.Manager.Tests
     /// (実害が出た: GameImageAssetHelperTests 追加で 3 クラス目になり race 顕在化)。同一 collection に入れて
     /// 直列化する (xUnit は collection 単位で並列化・同 collection 内は逐次)。<c>DisableParallelization</c> で
     /// 他 collection とも並列にしない (静的はプロセス全体で 1 つのため完全直列化で安全側)。
-    /// 対象: EditViewModelDirtyTests / GameImageAssetHelperTests / RestoreReconciliationServiceTests。
+    /// 対象: EditViewModelDirtyTests / GameImageAssetHelperTests / GameImageSaveImporterTests / RestoreReconciliationServiceTests。
     /// </summary>
     [CollectionDefinition("PathManagerStatic", DisableParallelization = true)]
     public class PathManagerStaticCollection { }

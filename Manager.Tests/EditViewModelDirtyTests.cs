@@ -96,6 +96,21 @@ namespace TonePrism.Manager.Tests
         }
 
         [Fact]
+        public void CommitToVersion_KeepsExternalImagePath_NotNulled()
+        {
+            // (#386 指摘1) 外部 (gameFolder 外) 画像パスは版へ commit しても null 化されず絶対のまま残る。これにより
+            // 版切替 (= 前版への commit) で非選択版の外部画像指定が silent に消えず、保存時に全版まとめて取り込める。
+            // 旧実装は ToRel が外部を null 化していた (= 切替で消失)。
+            var vm = new EditViewModel(_db, Seed("sigExt", "T", "D"));
+            string external = Path.Combine(Path.GetTempPath(), "outside_" + Guid.NewGuid().ToString("N") + ".png");
+            vm.ThumbnailPath = external;
+
+            vm.CommitToVersion(vm.SelectedVersion);
+
+            Assert.Equal(external, vm.SelectedVersion.ThumbnailPath);   // 保持 (旧実装は null だった)
+        }
+
+        [Fact]
         public void DelimiterShiftBetweenFields_IsDetectedAsDirty()
         {
             // load: Title="A|B", Description="C"。編集で区切り '|' をフィールド間でずらす: Title="A", Description="B|C"。

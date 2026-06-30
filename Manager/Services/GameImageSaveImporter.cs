@@ -20,27 +20,30 @@ namespace TonePrism.Manager.Services
     public static class GameImageSaveImporter
     {
         /// <summary>
-        /// <paramref name="imagePath"/> が gameFolder 外なら <c>&lt;gameId&gt;/v&lt;diskVersion&gt;/.toneprism/&lt;role&gt;.&lt;ext&gt;</c> へ取り込み、
-        /// 取り込み後の内部絶対パスを返す。内部 / 空はそのまま返す。新規コピーした場合のみ <paramref name="createdAbsPathOrNull"/> に
-        /// その絶対パスを入れる (= 保存失敗時の best-effort 掃除対象。既存ファイル再利用や no-op のときは null)。
+        /// 版オブジェクトの画像パス (相対=既に内部 / 絶対外部=未取り込み) を受け、外部なら
+        /// <c>&lt;gameId&gt;/v&lt;diskVersion&gt;/.toneprism/&lt;role&gt;.&lt;ext&gt;</c> へ取り込み、gameFolder 基準の<b>相対パス</b>
+        /// (forward slash) を返す。相対 (既に内部) はそのまま返す。新規コピー時のみ <paramref name="createdAbsPathOrNull"/> に
+        /// 絶対パスを入れる (= 保存失敗時の best-effort 掃除対象。既存再利用 / no-op は null)。保存フローが全版に適用する想定
+        /// (#386 指摘1: CommitToVersion が外部画像を絶対のまま残すので、選択版だけでなく全版を取り込む)。
         /// </summary>
-        /// <param name="imagePath">VM の画像パス (絶対・外部もありうる)。</param>
+        /// <param name="versionImagePath">版オブジェクトの画像パス (相対 or 絶対外部)。</param>
         /// <param name="gameId">取り込み先のゲーム ID (rename 前 = ディスク上の現 ID)。</param>
         /// <param name="diskVersion">取り込み先の版文字列 (rename 前 = ディスク上の現 leaf)。</param>
         /// <param name="role">thumbnail / background。</param>
-        public static string ImportIfExternal(string imagePath, string gameId, string diskVersion,
+        public static string ImportIfExternalToRelative(string versionImagePath, string gameId, string diskVersion,
             GameImageAssetHelper.ImageRole role, out string createdAbsPathOrNull)
         {
             createdAbsPathOrNull = null;
-            if (string.IsNullOrWhiteSpace(imagePath)) return imagePath;
+            if (string.IsNullOrWhiteSpace(versionImagePath)) return versionImagePath;
+            if (!Path.IsPathRooted(versionImagePath)) return versionImagePath;   // 相対 = 既に内部 (DB 保存形)、そのまま
 
             string gameFolder = PathManager.GetGameFolder(gameId);
-            if (PathConversionHelper.IsPathInside(gameFolder, imagePath)) return imagePath;   // 既に内部 = 既存フローに委ねる
+            if (PathConversionHelper.IsPathInside(gameFolder, versionImagePath))
+                return PathConversionHelper.ToRelativePath(gameFolder, versionImagePath).Replace('\\', '/');   // 内部絶対 → 相対化 (防御的)
 
-            string rel = GameImageAssetHelper.ImportImage(gameId, diskVersion, role, imagePath, out bool created);
-            string abs = PathConversionHelper.ToAbsolutePath(gameFolder, rel);
-            if (created) createdAbsPathOrNull = abs;
-            return abs;
+            string rel = GameImageAssetHelper.ImportImage(gameId, diskVersion, role, versionImagePath, out bool created);   // forward slash 相対
+            if (created) createdAbsPathOrNull = PathConversionHelper.ToAbsolutePath(gameFolder, rel);
+            return rel;
         }
 
         /// <summary>
