@@ -202,10 +202,37 @@ namespace TonePrism.Manager.Shell.GameForm
             if (missingExe.Count > 0)
             {
                 WinForms.MessageBox.Show(Owner,
-                    "以下のバージョンの実行ファイルが未設定、またはゲームフォルダ外を指しています:\n\n  " +
+                    "以下のバージョンの実行ファイルが未設定です:\n\n  " +
                     string.Join("\n  ", missingExe.Select(x => x.Version ?? "(未設定)")) +
                     "\n\nバージョン管理で該当版を選び、ゲームフォルダ内の実行ファイルを指定してから保存してください。",
                     "実行ファイルの入力エラー (" + missingExe.Count + " 件)", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
+                return;
+            }
+
+            // 4c. (#386 round4 指摘1/2) 全版の外部画像 (= 手順7の取り込み対象) を拡張子・存在で事前検証してブロック。手順1の
+            //     検証は選択版 (VM プロパティ) しか見ないが、手順7は vm.Versions 全版を取り込む。非選択版に readme.txt を
+            //     サムネ指定したり、実体が消えた外部画像を残したまま保存すると、無検証で .toneprism に取り込まれる / 取り込み時に
+            //     診断不能な例外で停止する。ここで版名・役割・理由つきで弾く (exe 4b と対称)。内部/相対は取り込み対象外なので
+            //     検証しない (既存の内部画像・pre-existing の dangling は本保存の責務外、RestoreReconciliationService が別途検出)。
+            var badImages = new List<string>();
+            foreach (var ver in vm.Versions)
+            {
+                if (ver == null) continue;
+                foreach (var (role, path) in new[] { ("サムネイル画像", ver.ThumbnailPath), ("背景画像", ver.BackgroundPath) })
+                {
+                    if (string.IsNullOrWhiteSpace(path) || !System.IO.Path.IsPathRooted(path)) continue;   // 空/相対 = 取り込み対象外
+                    if (PathConversionHelper.IsPathInside(vm.GameFolder, path)) continue;                   // 内部絶対も対象外
+                    string label = "版 " + (ver.Version ?? "(未設定)") + " の" + role;
+                    if (!GameFormHelper.ValidateFilePath(path, null, GameFormHelper.ImageFileExtensions, false, label, out string imgErr))
+                        badImages.Add("  " + imgErr);
+                }
+            }
+            if (badImages.Count > 0)
+            {
+                WinForms.MessageBox.Show(Owner,
+                    "以下のバージョンの画像を取り込めません。バージョン管理で該当版を選び、画像を選び直してから保存してください:\n\n" +
+                    string.Join("\n", badImages),
+                    "画像の入力エラー (" + badImages.Count + " 件)", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
                 return;
             }
 
@@ -231,7 +258,9 @@ namespace TonePrism.Manager.Shell.GameForm
             //    abort 時も取り込みファイルは削除しない: 削除すると非選択版の相対パスが dangling になり retry で silent loss
             //    する (GameImageSaveImporter の doc 参照)。残せば retry でその実体を解決して保存成功・放棄時の orphan は無害。
             //    コピーは同期 (画像は通常小サイズで軽量。多版×大画像で体感が出るなら ProcessingDialog 化を検討)。
-            string diskGameId = vm.OriginalGame.GameId;
+            //    取り込み先の gameId は ver.GameId を使う (rename に追従する live 値。ApplyGameIdRename が GameFolder と同時に
+            //    更新する)。round4 指摘3: OriginalGame.GameId は rename 後も旧 ID のままで、gameId rename 済→DB 失敗→retry の
+            //    recovery 経路で GetGameFolder(旧ID) が削除済フォルダを復活させ、後続 DecideCollision を恒久ブロックする穴になる。
             bool imagesImported = false;
             try
             {
@@ -248,8 +277,8 @@ namespace TonePrism.Manager.Shell.GameForm
                         Logger.Warn("[EditGamePage] (#386) snapshot 欠落 version id=" + ver.Id + " ('" + (ver.Version ?? "(null)") + "') の画像取り込みを skip");
                         continue;
                     }
-                    ver.ThumbnailPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.ThumbnailPath, diskGameId, dv, GameImageAssetHelper.ImageRole.Thumbnail, out bool t);
-                    ver.BackgroundPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.BackgroundPath, diskGameId, dv, GameImageAssetHelper.ImageRole.Background, out bool b);
+                    ver.ThumbnailPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.ThumbnailPath, ver.GameId, dv, GameImageAssetHelper.ImageRole.Thumbnail, out bool t);
+                    ver.BackgroundPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.BackgroundPath, ver.GameId, dv, GameImageAssetHelper.ImageRole.Background, out bool b);
                     imagesImported |= t || b;
                 }
             }

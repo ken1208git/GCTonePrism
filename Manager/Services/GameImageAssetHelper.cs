@@ -46,8 +46,9 @@ namespace TonePrism.Manager.Services
 
         /// <summary>
         /// 本番: 上記に加え、新規にコピーしたか (<paramref name="createdNewFile"/>=true)、既に同一実体が所定位置にあり
-        /// 複製しなかったか (false) を返す。caller は保存失敗時の orphan 掃除で、<b>新規コピー時のみ</b>取り込んだ
-        /// ファイルを削除するために使う (再利用した既存ファイルを誤って消さないため)。
+        /// 複製しなかったか (false) を返す。※現状 games の production caller はこの out 版を使わない (round2 で保存失敗時の
+        /// orphan 掃除を撤去＝掃除しない設計にしたため。理由は <see cref="GameImageSaveImporter"/> の doc 参照)。guide 実装
+        /// (<see cref="IntroGuideAssetHelper"/>) との対称性 + no-op 検出の単体テスト用に残置。
         /// </summary>
         public static string ImportImage(string gameId, string version, ImageRole role, string sourceAbsolutePath, out bool createdNewFile)
         {
