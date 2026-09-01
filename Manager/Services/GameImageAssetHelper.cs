@@ -21,8 +21,10 @@ namespace TonePrism.Manager.Services
     /// - <b>copy-not-move</b>: 元画像は消さない (先輩らのゲームに「game 本体が使ってるとも言い切れない画像」を
     ///   サムネ指定したものがあり、move で実行時参照を壊さないため)。
     /// - <b>orphan</b>: 同拡張子の差し替えは <c>overwrite</c> で orphan なし。拡張子が変わると旧役割ファイル
-    ///   (例 png→jpg で thumbnail.png) が残る → <b>#348 と地続き</b>で本 PR では掃除しない (= 役割解決は DB の
-    ///   保存パスが指す実体で行うため表示は壊れない。dead bytes が残るだけ)。
+    ///   (例 png→jpg で thumbnail.png) が残るが、保存<b>成功後</b>に <see cref="CleanupStaleRoleFiles"/> で
+    ///   その版の現行 thumbnail/background 以外の役割ファイルを掃除する (#348。1 つの .toneprism を参照するのはその 1 版
+    ///   だけなので、その版の 2 パスだけ見れば安全)。※取り込み時 (保存確定前) に消すと abort で旧画像消失 + DB dangling
+    ///   になるため必ず成功後に行う (#417 と同根)。
     /// - Launcher 解決は確認済み (GamePathResolver が <c>games/&lt;id&gt;</c> 起点で相対サブフォルダを path_join 解決、
     ///   読み出しコード変更不要)。保存パスは forward slash で統一 (guide と同・#388 の方向)。
     ///
@@ -97,6 +99,36 @@ namespace TonePrism.Manager.Services
             File.Copy(sourceAbsolutePath, destAbs, overwrite: true);   // copy-not-move: source は残す
             createdNewFile = true;
             return destAbs;
+        }
+
+        /// <summary>
+        /// (#348) 保存<b>成功後</b>に呼ぶ orphan 掃除。<paramref name="version"/> の <c>.toneprism</c> 内で、その版の現行
+        /// thumbnail/background (<paramref name="thumbnailRel"/> / <paramref name="backgroundRel"/> が指すファイル) 以外の
+        /// 役割ファイル (<c>thumbnail.*</c> / <c>background.*</c>) を削除する (拡張子変更後の旧ファイル等)。1 つの
+        /// <c>.toneprism</c> を参照するのはその 1 版だけなので、その版の 2 パスだけ見れば安全。best-effort (個々の削除失敗は
+        /// 握り潰す＝残っても dead bytes)。<b>※必ず保存確定 (DB write 成功) 後に呼ぶこと</b>: 取り込み時に消すと abort で
+        /// 旧画像消失 + DB dangling になる (#417 と同根)。相対パスの区切りは正規化して扱う。
+        /// </summary>
+        public static void CleanupStaleRoleFiles(string gameFolder, string version, string thumbnailRel, string backgroundRel)
+        {
+            if (string.IsNullOrWhiteSpace(gameFolder) || string.IsNullOrWhiteSpace(version)) return;
+            string reservedDir = Path.Combine(gameFolder, PathManager.GetVersionFolderLeaf(version), ReservedFolderName);
+            if (!Directory.Exists(reservedDir)) return;
+
+            var keep = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(thumbnailRel)) keep.Add(Path.GetFileName(thumbnailRel.Replace('\\', '/')));
+            if (!string.IsNullOrWhiteSpace(backgroundRel)) keep.Add(Path.GetFileName(backgroundRel.Replace('\\', '/')));
+
+            foreach (var file in Directory.GetFiles(reservedDir))
+            {
+                string stem = Path.GetFileNameWithoutExtension(file);
+                if (!string.Equals(stem, RoleLeafBase(ImageRole.Thumbnail), StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(stem, RoleLeafBase(ImageRole.Background), StringComparison.OrdinalIgnoreCase))
+                    continue;   // 役割ファイル (thumbnail/background) 以外は触らない
+                if (keep.Contains(Path.GetFileName(file))) continue;   // その版の現行ファイルは残す
+                try { File.Delete(file); }
+                catch { /* best-effort: 掃除失敗は無害 (dead bytes が残るだけ) */ }
+            }
         }
     }
 }

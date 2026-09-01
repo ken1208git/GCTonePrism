@@ -408,6 +408,15 @@ namespace TonePrism.Manager.Shell.GameForm
             //    ので GoBack 前 (ページ有効中) に。成功通知は WinForms ダイアログをやめ、シェルレベルの非モーダル
             //    トーストにして GoBack 後の一覧の上に出す (#324 Snackbar 化)。
             Db.SessionBackupCoordinator.RunAfterOperation(Owner, assetsChanged, "ゲーム編集");
+            // (#348) 保存確定後: 各版の .toneprism から「拡張子変更で残った旧役割ファイル」を掃除 (best-effort。保存済なので
+            // abort 安全問題なし＝import 時に消すと abort で旧画像消失+DB dangling になる穴を避けるため成功後にやる・#417)。
+            try
+            {
+                foreach (var ver in vm.Versions)
+                    if (ver != null)
+                        GameImageAssetHelper.CleanupStaleRoleFiles(vm.GameFolder, ver.Version, ver.ThumbnailPath, ver.BackgroundPath);
+            }
+            catch (Exception cleanupEx) { Logger.Warn("[EditGamePage] (#348) .toneprism orphan 掃除に失敗 (保存は成功済)。" + cleanupEx.Message); }
             vm.MarkSaved();   // (#383) 保存成功 → 未保存なし基準に更新 (再ナビゲーションの割り込みが再確認しないように)
             // (#383 指摘6) 着地先は呼び出し側が決める (ボタン=一覧 / ガード=押した先)。ただし保存は既に成功済なので、
             // 遷移 (onSuccess) の失敗を TrySave の catch に飛ばすと「更新に失敗しました」と嘘表示になる。ここで握って

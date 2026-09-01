@@ -37,6 +37,36 @@ namespace TonePrism.Manager.Tests
 
         private string VersionFolder() => Path.Combine(_tmp, "games", "g1", "v1.0.0");
 
+        // ---- (#348) CleanupStaleRoleFiles ----
+
+        [Fact]
+        public void CleanupStaleRoleFiles_DeletesOtherExtRoleFiles_KeepsCurrent_AndNonRole()
+        {
+            string dir = Path.Combine(VersionFolder(), ".toneprism");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "thumbnail.png"), "old-orphan");    // 旧拡張子 (削除対象)
+            File.WriteAllText(Path.Combine(dir, "thumbnail.jpg"), "current-thumb"); // 現行 (残す)
+            File.WriteAllText(Path.Combine(dir, "background.png"), "current-bg");    // 現行 (残す)
+            File.WriteAllText(Path.Combine(dir, "readme.txt"), "keep");             // 非役割 (触らない)
+
+            // 現行 = thumbnail.jpg / background.png (backslash 区切りでも正規化されることも確認)。
+            GameImageAssetHelper.CleanupStaleRoleFiles(
+                Path.Combine(_tmp, "games", "g1"), "v1.0.0",
+                "v1.0.0\\.toneprism\\thumbnail.jpg", "v1.0.0/.toneprism/background.png");
+
+            Assert.False(File.Exists(Path.Combine(dir, "thumbnail.png")));  // 旧拡張子 orphan は削除
+            Assert.True(File.Exists(Path.Combine(dir, "thumbnail.jpg")));   // 現行サムネは残る
+            Assert.True(File.Exists(Path.Combine(dir, "background.png")));  // 現行背景は残る
+            Assert.True(File.Exists(Path.Combine(dir, "readme.txt")));      // 非役割ファイルは温存
+        }
+
+        [Fact]
+        public void CleanupStaleRoleFiles_NoToneprismFolder_NoThrow()
+        {
+            // .toneprism が無い版でも例外にならない (no-op)。
+            GameImageAssetHelper.CleanupStaleRoleFiles(Path.Combine(_tmp, "games", "g1"), "v9.9.9", "", "");
+        }
+
         // ---- コア CopyImageInto ----
 
         [Fact]
