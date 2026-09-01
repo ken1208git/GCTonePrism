@@ -293,6 +293,14 @@ namespace TonePrism.Manager.Shell.GameForm
             // これが無いと「画像だけ差し替えて保存」が DB-only バックアップになり、その世代から復元すると DB が指す画像が欠落する。
             bool assetsChanged = imagesImported;
 
+            // (#386 round5 指摘1) 手順7で外部画像を取り込むと、既存の同名役割ファイル (.toneprism/thumbnail.png 等) を
+            // overwrite:true で上書きする = いま DB が指す画像そのものを差し替える。以降の abort (フォルダ衝突/rename 失敗/
+            // DB 失敗) では DB は旧のままでも画像実体は既に新しい。abort ダイアログにこの旨を添え「DB は更新前」を全体状態の
+            // 説明と誤読させない。恒久対応 (成功確定まで実体を触らない staging) は #417。
+            string importedNote = imagesImported
+                ? "\n\n※ この保存で選んだ画像は既にゲームフォルダ内へ取り込み済みです (旧画像を同じ名前で差し替えた場合、旧画像は上書きされています。元に戻すにはバックアップからの復元が必要)。"
+                : "";
+
             // 8. gameId rename (フォルダ Move + DB)。GameIdRenameService に委譲。
             string oldGameId = vm.OriginalGame.GameId;
             string newGameId = (vm.GameId ?? "").Trim();
@@ -339,7 +347,7 @@ namespace TonePrism.Manager.Shell.GameForm
             if (plan.HasCollision)
             {
                 // (#386) 取り込み済画像は削除しない (削除すると非選択版の相対パスが dangling になり retry で silent loss)。
-                WinForms.MessageBox.Show(Owner, plan.CollisionMessage, "フォルダ衝突", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
+                WinForms.MessageBox.Show(Owner, plan.CollisionMessage + importedNote, "フォルダ衝突", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
                 return;
             }
             var completed = new List<VersionFolderRenameService.RenamePlan>();
@@ -357,7 +365,7 @@ namespace TonePrism.Manager.Shell.GameForm
                 if (exec != null && exec.Failed)
                 {
                     // (#386) 取り込み済画像は削除しない (同上: retry での silent loss を避ける)。
-                    WinForms.MessageBox.Show(Owner, exec.ErrorMessage, "フォルダリネーム失敗", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Error);
+                    WinForms.MessageBox.Show(Owner, exec.ErrorMessage + importedNote, "フォルダリネーム失敗", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Error);
                     return;
                 }
                 if (exec != null) completed = exec.CompletedRenames;
@@ -388,7 +396,7 @@ namespace TonePrism.Manager.Shell.GameForm
                 WinForms.MessageBox.Show(Owner,
                     "バージョン情報 + ゲーム本体情報の DB 更新に失敗しました:\n  " + dbEx.Message + "\n\n  完了済の版フォルダ rename " + rolledBack +
                     " 件を元に戻しました" + (rollbackFailures > 0 ? " (rollback 失敗 " + rollbackFailures + " 件、ログ参照)" : "") +
-                    "。\n  " + stateNote, "DB 更新失敗", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Error);
+                    "。\n  " + stateNote + importedNote, "DB 更新失敗", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Error);
                 return;
             }
 

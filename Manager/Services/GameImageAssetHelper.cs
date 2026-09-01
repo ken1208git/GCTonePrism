@@ -11,8 +11,11 @@ namespace TonePrism.Manager.Services
     /// <c>background.&lt;ext&gt;</c> にする (予測可能・1 役割 1 ファイル)。
     ///
     /// 設計理由:
-    /// - <b>絶対外部パス保存の廃止</b> (#386 footgun): 旧 AddGameForm は外部画像を選ぶと絶対パスを DB 保存し、
-    ///   他 PC / ファイルサーバで解決できず壊れていた。本 helper は必ず版フォルダ内へコピーし相対パスを返す。
+    /// - <b>絶対外部パス保存の footgun 回避</b> (#386): 外部画像を naive に扱うと絶対パスが DB に残り (例
+    ///   <c>PathConversionHelper.ToRelativePathAfterCopy</c> の「コピー先外は絶対のまま返す」フォールバック)、他 PC /
+    ///   ファイルサーバで解決できず壊れる。本 helper は必ず版フォルダ内へコピーし相対パスを返すことでこれを避ける。
+    ///   ※ pre-#386 EDIT / 現行 AddGameForm は外部画像を <c>IsPathInside</c> で検証ブロックしていた (= 絶対保存はしない
+    ///   代わりに外部取り込み不可)。本 helper は EDIT でその「取り込み解禁」を安全に成立させる (ADD は #324 で移行)。
     /// - <b>予約名前空間 <c>.toneprism/</c></b>: 画像を版フォルダ直下に置くと game 本体ファイルと混在し、役割正規化が
     ///   game の同名アセットを clobber しうる。サブフォルダに隔離して物理分離する。
     /// - <b>copy-not-move</b>: 元画像は消さない (先輩らのゲームに「game 本体が使ってるとも言い切れない画像」を
