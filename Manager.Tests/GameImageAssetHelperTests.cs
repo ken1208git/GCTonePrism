@@ -51,8 +51,9 @@ namespace TonePrism.Manager.Tests
 
             // 現行 = thumbnail.jpg / background.png (backslash 区切りでも正規化されることも確認)。
             GameImageAssetHelper.CleanupStaleRoleFiles(
-                Path.Combine(_tmp, "games", "g1"), "v1.0.0",
-                "v1.0.0\\.toneprism\\thumbnail.jpg", "v1.0.0/.toneprism/background.png");
+                Path.Combine(_tmp, "games", "g1"),
+                new[] { "v1.0.0" },
+                new[] { "v1.0.0\\.toneprism\\thumbnail.jpg", "v1.0.0/.toneprism/background.png" });
 
             Assert.False(File.Exists(Path.Combine(dir, "thumbnail.png")));  // 旧拡張子 orphan は削除
             Assert.True(File.Exists(Path.Combine(dir, "thumbnail.jpg")));   // 現行サムネは残る
@@ -61,10 +62,29 @@ namespace TonePrism.Manager.Tests
         }
 
         [Fact]
+        public void CleanupStaleRoleFiles_KeepsFileReferencedByAnotherVersion()
+        {
+            // (round6 指摘1) v1.0.0/.toneprism/thumbnail.png を v2.0.0 が参照している場合、v1.0.0 掃除で消してはいけない
+            // (版跨ぎ参照は運用上異常だが手入力で入りうる。削除は不可逆なので「どの版も参照しないファイル」だけ消す)。
+            string dir = Path.Combine(_tmp, "games", "g1", "v1.0.0", ".toneprism");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "thumbnail.png"), "shared");   // v2.0.0 が参照
+            File.WriteAllText(Path.Combine(dir, "thumbnail.jpg"), "orphan");   // どの版も参照しない
+
+            GameImageAssetHelper.CleanupStaleRoleFiles(
+                Path.Combine(_tmp, "games", "g1"),
+                new[] { "v1.0.0", "v2.0.0" },
+                new[] { "v2.0.0/.toneprism/thumbnail.jpg", "v1.0.0/.toneprism/thumbnail.png" });
+
+            Assert.True(File.Exists(Path.Combine(dir, "thumbnail.png")));   // 別版が参照 = 残す
+            Assert.False(File.Exists(Path.Combine(dir, "thumbnail.jpg")));  // どの版も参照しない = 削除
+        }
+
+        [Fact]
         public void CleanupStaleRoleFiles_NoToneprismFolder_NoThrow()
         {
             // .toneprism が無い版でも例外にならない (no-op)。
-            GameImageAssetHelper.CleanupStaleRoleFiles(Path.Combine(_tmp, "games", "g1"), "v9.9.9", "", "");
+            GameImageAssetHelper.CleanupStaleRoleFiles(Path.Combine(_tmp, "games", "g1"), new[] { "v9.9.9" }, new string[0]);
         }
 
         // ---- コア CopyImageInto ----

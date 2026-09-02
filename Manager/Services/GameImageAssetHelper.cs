@@ -26,7 +26,8 @@ namespace TonePrism.Manager.Services
     ///   だけなので、その版の 2 パスだけ見れば安全)。※取り込み時 (保存確定前) に消すと abort で旧画像消失 + DB dangling
     ///   になるため必ず成功後に行う (#417 と同根)。
     /// - Launcher 解決は確認済み (GamePathResolver が <c>games/&lt;id&gt;</c> 起点で相対サブフォルダを path_join 解決、
-    ///   読み出しコード変更不要)。保存パスは forward slash で統一 (guide と同・#388 の方向)。
+    ///   読み出しコード変更不要)。<b>取り込み時</b>の保存パスは forward slash (guide と同方向)。※既存内部パスの再保存は
+    ///   <c>ToRel</c> が backslash を返すため区切りは混在しうる (Windows は両方解決可・完全統一は #388)。
     ///
     /// UI を持たない純ロジック (= 単体テスト可能)。本番 wrapper (<see cref="ImportImage(string,string,ImageRole,string)"/>)
     /// のみ <see cref="PathManager"/> に依存し、コア (<see cref="CopyImageInto(string,ImageRole,string)"/>) は
@@ -61,7 +62,16 @@ namespace TonePrism.Manager.Services
             string gameFolder = PathManager.GetGameFolder(gameId);
             string destAbs = CopyImageInto(versionFolder, role, sourceAbsolutePath, out createdNewFile);
             // ゲームフォルダ基準で相対化し forward slash に統一 (Launcher は games/<id> 起点で解決、guide と同方向・#388)。
-            return PathConversionHelper.ToRelativePath(gameFolder, destAbs).Replace('\\', '/');
+            string rel = PathConversionHelper.ToRelativePath(gameFolder, destAbs).Replace('\\', '/');
+            // (#386 round6 指摘7) ToRelativePath は基準フォルダ外だと警告なしで絶対を返す silent fallback を持つ。gameId の末尾
+            // 空白やセパレータ差で GetGameFolder/GetVersionFolder が食い違うと絶対パスが DB に流入し、#386 が潰した footgun が
+            // silent 復活する。相対化に失敗したら例外にして呼び出し側の取り込みエラーダイアログ経路に載せる (silent を許さない)。
+            if (Path.IsPathRooted(rel))
+            {
+                Logger.Error("[GameImageAssetHelper] (#386) 取り込み画像の相対化に失敗 (絶対のまま)。gameFolder=" + gameFolder + " dest=" + destAbs);
+                throw new InvalidOperationException("画像の取り込み先パスを相対化できませんでした (gameId / version の不整合の可能性)。");
+            }
+            return rel;
         }
 
         /// <summary>
@@ -102,32 +112,44 @@ namespace TonePrism.Manager.Services
         }
 
         /// <summary>
-        /// (#348) 保存<b>成功後</b>に呼ぶ orphan 掃除。<paramref name="version"/> の <c>.toneprism</c> 内で、その版の現行
-        /// thumbnail/background (<paramref name="thumbnailRel"/> / <paramref name="backgroundRel"/> が指すファイル) 以外の
-        /// 役割ファイル (<c>thumbnail.*</c> / <c>background.*</c>) を削除する (拡張子変更後の旧ファイル等)。1 つの
-        /// <c>.toneprism</c> を参照するのはその 1 版だけなので、その版の 2 パスだけ見れば安全。best-effort (個々の削除失敗は
-        /// 握り潰す＝残っても dead bytes)。<b>※必ず保存確定 (DB write 成功) 後に呼ぶこと</b>: 取り込み時に消すと abort で
-        /// 旧画像消失 + DB dangling になる (#417 と同根)。相対パスの区切りは正規化して扱う。
+        /// (#386) 保存<b>成功後</b>に呼ぶ orphan 掃除。各版の <c>.toneprism</c> 内の役割ファイル (<c>thumbnail.*</c> /
+        /// <c>background.*</c>) のうち、<b>どの版のどの役割からも参照されていない</b>ものを削除する (拡張子変更後の旧ファイル等)。
+        /// 「1 つの .toneprism ← 1 版」は本来の運用不変条件だが強制されていない (パス欄は自由入力・別版フォルダも選べる) ため、
+        /// <b>削除は不可逆</b>ゆえ防御的に「全版の thumbnail/background 相対パスを keep セットにし、<b>ファイル名でなく完全な
+        /// 相対パス</b>で照合」する (= 版跨ぎ参照や legacy 直下配置があっても live を消さない。SPEC §機能3 の旧規約「他版が
+        /// 参照しうるので旧画像は削除禁止」の意図を実装で満たす)。best-effort (個々の削除失敗は握り潰す＝残っても dead bytes)。
+        /// <b>※必ず保存確定 (DB write 成功) 後に呼ぶこと</b>: 取り込み時に消すと abort で旧画像消失 + DB dangling になる (#417 と同根)。
+        /// guide 側の同種 orphan は #348。
         /// </summary>
-        public static void CleanupStaleRoleFiles(string gameFolder, string version, string thumbnailRel, string backgroundRel)
+        /// <param name="gameFolder">ゲームフォルダ (rename 後の live 値)。</param>
+        /// <param name="versions">走査する版文字列 (各版の .toneprism を特定するため)。</param>
+        /// <param name="liveRelativePaths">全版の thumbnail/background 相対パス (= 参照されている = 残すべきファイル)。区切りは正規化して扱う。</param>
+        public static void CleanupStaleRoleFiles(string gameFolder, System.Collections.Generic.IEnumerable<string> versions,
+            System.Collections.Generic.IEnumerable<string> liveRelativePaths)
         {
-            if (string.IsNullOrWhiteSpace(gameFolder) || string.IsNullOrWhiteSpace(version)) return;
-            string reservedDir = Path.Combine(gameFolder, PathManager.GetVersionFolderLeaf(version), ReservedFolderName);
-            if (!Directory.Exists(reservedDir)) return;
+            if (string.IsNullOrWhiteSpace(gameFolder) || versions == null) return;
+            var live = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (liveRelativePaths != null)
+                foreach (var p in liveRelativePaths)
+                    if (!string.IsNullOrWhiteSpace(p)) live.Add(p.Replace('\\', '/'));
 
-            var keep = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!string.IsNullOrWhiteSpace(thumbnailRel)) keep.Add(Path.GetFileName(thumbnailRel.Replace('\\', '/')));
-            if (!string.IsNullOrWhiteSpace(backgroundRel)) keep.Add(Path.GetFileName(backgroundRel.Replace('\\', '/')));
-
-            foreach (var file in Directory.GetFiles(reservedDir))
+            foreach (var version in versions)
             {
-                string stem = Path.GetFileNameWithoutExtension(file);
-                if (!string.Equals(stem, RoleLeafBase(ImageRole.Thumbnail), StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(stem, RoleLeafBase(ImageRole.Background), StringComparison.OrdinalIgnoreCase))
-                    continue;   // 役割ファイル (thumbnail/background) 以外は触らない
-                if (keep.Contains(Path.GetFileName(file))) continue;   // その版の現行ファイルは残す
-                try { File.Delete(file); }
-                catch { /* best-effort: 掃除失敗は無害 (dead bytes が残るだけ) */ }
+                if (string.IsNullOrWhiteSpace(version)) continue;
+                string leaf = PathManager.GetVersionFolderLeaf(version);
+                string reservedDir = Path.Combine(gameFolder, leaf, ReservedFolderName);
+                if (!Directory.Exists(reservedDir)) continue;
+                foreach (var file in Directory.GetFiles(reservedDir))
+                {
+                    string stem = Path.GetFileNameWithoutExtension(file);
+                    if (!string.Equals(stem, RoleLeafBase(ImageRole.Thumbnail), StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(stem, RoleLeafBase(ImageRole.Background), StringComparison.OrdinalIgnoreCase))
+                        continue;   // 役割ファイル (thumbnail/background) 以外は触らない
+                    string rel = leaf + "/" + ReservedFolderName + "/" + Path.GetFileName(file);   // 完全な相対パスで照合 (ファイル名だけだと別版/legacy 直下の同名を誤判定)
+                    if (live.Contains(rel)) continue;   // どれかの版が参照 = 残す
+                    try { File.Delete(file); }
+                    catch { /* best-effort: 掃除失敗は無害 (dead bytes が残るだけ) */ }
+                }
             }
         }
     }
