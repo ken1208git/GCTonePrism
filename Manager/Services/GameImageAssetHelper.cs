@@ -28,6 +28,12 @@ namespace TonePrism.Manager.Services
     /// - Launcher 解決は確認済み (GamePathResolver が <c>games/&lt;id&gt;</c> 起点で相対サブフォルダを path_join 解決、
     ///   読み出しコード変更不要)。<b>取り込み時</b>の保存パスは forward slash (guide と同方向)。※既存内部パスの再保存は
     ///   <c>ToRel</c> が backslash を返すため区切りは混在しうる (Windows は両方解決可・完全統一は #388)。
+    /// - <b>検証責務は caller</b> (round7 指摘6): 拡張子・存在の検証は本 helper でなく caller が行う (EDIT は手順4c で全版検証)。
+    ///   helper は取り込みに専念する。ADD (#324) 配線時も同等の事前検証を入れること (拡張子無しファイルは <c>thumbnail</c>
+    ///   のような拡張子なし名で取り込まれてしまうため)。
+    /// - <b>版フォルダを作成しうる</b> (round7 指摘10): <see cref="CopyImageInto"/> の <c>Directory.CreateDirectory</c> が
+    ///   <c>.toneprism</c> と<b>親の版フォルダ</b>を作る。DB にあるが disk 不在の版に取り込むと版フォルダが materialize され、
+    ///   後続の版 rename 判定 (SourceExists) に影響しうる (#417)。
     ///
     /// UI を持たない純ロジック (= 単体テスト可能)。本番 wrapper (<see cref="ImportImage(string,string,ImageRole,string)"/>)
     /// のみ <see cref="PathManager"/> に依存し、コア (<see cref="CopyImageInto(string,ImageRole,string)"/>) は
@@ -136,19 +142,27 @@ namespace TonePrism.Manager.Services
             foreach (var version in versions)
             {
                 if (string.IsNullOrWhiteSpace(version)) continue;
-                string leaf = PathManager.GetVersionFolderLeaf(version);
-                string reservedDir = Path.Combine(gameFolder, leaf, ReservedFolderName);
-                if (!Directory.Exists(reservedDir)) continue;
-                foreach (var file in Directory.GetFiles(reservedDir))
+                try
                 {
-                    string stem = Path.GetFileNameWithoutExtension(file);
-                    if (!string.Equals(stem, RoleLeafBase(ImageRole.Thumbnail), StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(stem, RoleLeafBase(ImageRole.Background), StringComparison.OrdinalIgnoreCase))
-                        continue;   // 役割ファイル (thumbnail/background) 以外は触らない
-                    string rel = leaf + "/" + ReservedFolderName + "/" + Path.GetFileName(file);   // 完全な相対パスで照合 (ファイル名だけだと別版/legacy 直下の同名を誤判定)
-                    if (live.Contains(rel)) continue;   // どれかの版が参照 = 残す
-                    try { File.Delete(file); }
-                    catch { /* best-effort: 掃除失敗は無害 (dead bytes が残るだけ) */ }
+                    string leaf = PathManager.GetVersionFolderLeaf(version);
+                    string reservedDir = Path.Combine(gameFolder, leaf, ReservedFolderName);
+                    if (!Directory.Exists(reservedDir)) continue;
+                    foreach (var file in Directory.GetFiles(reservedDir))
+                    {
+                        string stem = Path.GetFileNameWithoutExtension(file);
+                        if (!string.Equals(stem, RoleLeafBase(ImageRole.Thumbnail), StringComparison.OrdinalIgnoreCase)
+                            && !string.Equals(stem, RoleLeafBase(ImageRole.Background), StringComparison.OrdinalIgnoreCase))
+                            continue;   // 役割ファイル (thumbnail/background) 以外は触らない
+                        string rel = leaf + "/" + ReservedFolderName + "/" + Path.GetFileName(file);   // 完全な相対パスで照合 (ファイル名だけだと別版/legacy 直下の同名を誤判定)
+                        if (live.Contains(rel)) continue;   // どれかの版が参照 = 残す
+                        try { File.Delete(file); }
+                        catch (Exception delEx) { Logger.Warn("[GameImageAssetHelper] (#386) orphan 削除失敗 (無害・dead bytes 残置): " + file + " — " + delEx.Message); }
+                    }
+                }
+                catch (Exception verEx)
+                {
+                    // (round7 指摘5) 列挙失敗 (権限/ロック) は当該版だけ skip し、残り版の掃除は続ける (握り潰さない=CLAUDE.md §例外作法)。
+                    Logger.Warn("[GameImageAssetHelper] (#386) 版 '" + version + "' の orphan 掃除を skip (列挙失敗): " + verEx.Message);
                 }
             }
         }

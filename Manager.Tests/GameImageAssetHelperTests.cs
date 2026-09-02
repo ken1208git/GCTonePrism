@@ -134,8 +134,8 @@ namespace TonePrism.Manager.Tests
         [Fact]
         public void CopyImageInto_ExtensionChange_LeavesOldRoleFile_AsDocumentedOrphan()
         {
-            // png→jpg で旧 thumbnail.png が残る (= #348 と地続き・本 PR では掃除しない)。表示は DB の保存パスが
-            // 指す実体 (新 jpg) で解決されるため壊れない。dead bytes が残るだけ、を明示的に固定。
+            // png→jpg の差し替えで、CopyImageInto 単体では旧 thumbnail.png を残す (掃除は別 = 保存成功後に
+            // CleanupStaleRoleFiles が実施)。ここは「コア copy が上書きでなく別ファイルを作り、旧拡張子を残す」挙動の固定。
             string vf = VersionFolder();
             GameImageAssetHelper.CopyImageInto(vf, Role.Thumbnail, WriteSource("a.png", new byte[] { 1 }));
             GameImageAssetHelper.CopyImageInto(vf, Role.Thumbnail, WriteSource("b.jpg", new byte[] { 2 }));
