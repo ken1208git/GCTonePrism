@@ -67,7 +67,7 @@ namespace TonePrism.Manager.Services
         {
             try
             {
-                string responsesDir = Path.Combine(PathManager.BaseDirectory, "responses");
+                string responsesDir = PathManager.ResponsesFolder;
                 Directory.CreateDirectory(responsesDir);
                 string targetPath = Path.Combine(responsesDir, FileName);
                 string tmpPath = targetPath + ".tmp";

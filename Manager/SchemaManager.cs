@@ -37,7 +37,12 @@ namespace TonePrism.Manager
         //      取り込み (drop-folder 2-phase) から JSON 直読み + Launcher in-memory 集計へピボット。これらは取り込み
         //      INSERT も Launcher 書込も未実装でデータ未蓄積のため撤去コストはほぼゼロ。子テーブル (games 参照) で
         //      CASCADE 波及なし。既存行は破棄される (元々空)。
-        private const int CurrentDbVersion = 23;
+        // v24: games.game_no (不変の内部番号) を追加 (#297 PR2)。プレイ記録 / アンケートの JSON は DB の FK と違い
+        //      `ON UPDATE CASCADE` 相当の改名追随を持たないため、game_id (= 手入力・改名可) を書くと ID 改名で
+        //      過去 JSON が全部腐る。そこで「絶対に変わらない番号」を games に 1 列足し、JSON はそれを指す。
+        //      **主キーは game_id のまま**で FK も貼り替えない (= 当初案の PK 差し替えより影響範囲が桁違いに小さい)。
+        //      ADD COLUMN + backfill + UNIQUE INDEX のみでテーブル recreate なし。詳細は SPEC §7.5.3。
+        private const int CurrentDbVersion = 24;
 
         public SchemaManager(DatabaseConnection conn)
         {
@@ -343,7 +348,8 @@ namespace TonePrism.Manager
                     controls TEXT,
                     key_mapping TEXT,
                     arguments TEXT,
-                    version TEXT
+                    version TEXT,
+                    game_no INTEGER
                 )";
 
             using (var command = new SQLiteCommand(createGamesTable, connection, transaction))
@@ -353,6 +359,12 @@ namespace TonePrism.Manager
 
             // games.arguments の既存 DB への retrofit は MigrateV13ToV14 (version chain) で行う。
             // 新規 DB は上の CREATE TABLE で arguments を持つため CreateTables 側での ALTER は不要。
+
+            // (#297 PR2) game_no の一意性を DB レベルで担保する。番号が重複すると 2 ゲームのプレイ記録 JSON が
+            // 同じ番号を指し集計が混線する (= 静かなデータ破損) ため、採番ロジックのバグを INSERT 時点で
+            // 例外に変える最後の砦。新規 DB はここで作成 (空テーブルなので重複なし)、既存 DB は
+            // MigrateV23ToV24 が backfill 後に作成する。
+            EnsureGameNoUniqueIndex(connection, transaction);
 
             // game_versionsテーブル作成
             string createGameVersionsTable = @"
@@ -788,6 +800,13 @@ namespace TonePrism.Manager
                 // (※ backup_log [v19 DROP] の v0 path 未適用は #297 とは別件の既存 gap で本 PR scope 外)
                 MigrateV22ToV23(connection, transaction);
 
+                // (#297 PR2) v0 fast-path も MigrateV23ToV24 を明示適用する。versioning 導入前 (user_version=0) の DB は
+                // CreateTables の CREATE TABLE IF NOT EXISTS が既存 games を温存するため game_no 列が付かず、
+                // さらに直前の MigrateV19ToV20 が games を recreate した場合も (v20 時点の列構成で作り直すため)
+                // game_no を持たない。列追加も backfill も冪等なので新規 DB では実質 no-op (列は既に有り、
+                // 未採番行だけを対象にする backfill が空振りする)。
+                MigrateV23ToV24(connection, transaction);
+
                 SetDbVersion(connection, CurrentDbVersion, transaction);
                 return;
             }
@@ -1099,6 +1118,21 @@ namespace TonePrism.Manager
                         else
                         {
                             Logger.Warn("[DatabaseManager] 直前の migration が未完のため v22→v23 も skip、user_version は " + currentVersion + " のまま据え置き");
+                        }
+                    }
+
+                    if (currentVersion < 24)
+                    {
+                        // v23 → v24: games.game_no (JSON 用の不変キー) を追加 + backfill (#297 PR2)。
+                        // ALTER TABLE ADD COLUMN + UPDATE のみでテーブル recreate なし、FK も貼り替えない。前段完了時のみ bump。
+                        if (currentVersion >= 23)
+                        {
+                            MigrateV23ToV24(connection, migTransaction);
+                            currentVersion = 24;
+                        }
+                        else
+                        {
+                            Logger.Warn("[DatabaseManager] 直前の migration が未完のため v23→v24 も skip、user_version は " + currentVersion + " のまま据え置き");
                         }
                     }
 
@@ -2278,6 +2312,330 @@ namespace TonePrism.Manager
             }
         }
 
+        /// <summary>(#297 PR2) games(game_no) UNIQUE INDEX 名。CreateTables / MigrateV23ToV24 共通。</summary>
+        private const string GamesGameNoUniqueIndexName = "idx_games_game_no";
+
+        /// <summary>
+        /// (#297 PR2) games(game_no) の UNIQUE INDEX を作成する。CreateTables (新規 DB) と
+        /// MigrateV23ToV24 (既存 DB の backfill 後) の両方から呼ぶ共用 helper。
+        ///
+        /// NULL は SQLite の UNIQUE INDEX で重複扱いされない (= 複数行が game_no IS NULL でも通る) ため、
+        /// 「未採番の行が複数あっても index 作成は成功する」ことに注意。未採番は
+        /// <see cref="AllocateNextGameNo"/> を通らずに INSERT された異常系でのみ起こり、
+        /// JSON 書込側 (Launcher) は game_no を持たないゲームの記録を出さずに warn する契約。
+        /// </summary>
+        private void EnsureGameNoUniqueIndex(SQLiteConnection connection, SQLiteTransaction transaction)
+        {
+            // CreateTables は「既存 DB でも毎回走る」経路 (CREATE TABLE IF NOT EXISTS) で、しかも migration より
+            // **前**に実行される。v23 以前の DB では games に game_no 列がまだ無い状態でここへ到達するため、
+            // 列の存在確認なしに index を張ると "no such column: game_no" で起動が落ちる。列が無い場合は
+            // 黙って諦め、後続の MigrateV23ToV24 が列追加 + backfill の後に改めて張る。
+            if (!TableHasColumn(connection, transaction, "games", "game_no"))
+            {
+                Logger.Info("[DatabaseManager] games.game_no 列が未追加のため UNIQUE INDEX 作成を見送り (MigrateV23ToV24 で作成されます)");
+                return;
+            }
+
+            using (var cmd = new SQLiteCommand(
+                "CREATE UNIQUE INDEX IF NOT EXISTS " + GamesGameNoUniqueIndexName + " ON games(game_no)",
+                connection, transaction))
+            {
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>
+        /// (#297 PR2) v23 → v24: games に不変の内部番号 `game_no` を追加し、既存行へ backfill する。
+        ///
+        /// **なぜ必要か**: プレイ記録 / アンケートは #297 で SQLite を離れ `responses/` の JSON になった。DB の FK は
+        /// 改名に追随できるが JSON にその仕組みは無く、`game_id` (= スタッフが手入力する文字列・フォルダ名兼用・改名可)
+        /// を JSON に書くと、ゲーム ID を改名した瞬間に過去の全記録がどのゲームのものか分からなくなる。そこで
+        /// 「一度振ったら二度と変わらない番号」を games に持たせ、JSON はそれを指す。
+        ///
+        /// **なぜ列追加だけで済むか**: 主キーは `game_id` のままにし、子テーブル (game_versions / developers /
+        /// store_section_games) の FK も貼り替えない。DB 内部の参照は従来どおり FK が面倒を見るので、`game_no` は
+        /// 「JSON 専用の不変キー」として増設するだけでよい。テーブル recreate も FK 貼り替えも発生しない。
+        ///
+        /// **採番順**: `game_id` の昇順で 1 から連番。並び順に意味は無い (番号は不透明な識別子) が、再実行しても
+        /// 同じ結果になる決定的な順序にしておくことで、検証時に期待値を書ける。`display_order` ではなく主キーで
+        /// 並べるのは、旧 DB / テスト fixture の games が最小構成 (`game_id` + `title` のみ) のこともあり、
+        /// 主キー以外の列の存在を前提にすると migration が落ちるため (`rowid` も VACUUM で変わりうるので使わない)。
+        ///
+        /// **削除後の再利用防止**: 採番済みの最大値を settings の <see cref="SettingsKeys.GameNoSeq"/> に high-water mark
+        /// として残す。最大番号のゲームを削除しても seq は下がらないため、次に追加されるゲームが削除済みゲームの番号を
+        /// 継承して過去の記録を横取りする事故が起きない (単純な `MAX(game_no)+1` だとこれが起きる)。
+        ///
+        /// 冪等: 列が既にあれば ALTER を skip、backfill は `game_no IS NULL` の行だけを対象にする。
+        /// </summary>
+        private void MigrateV23ToV24(SQLiteConnection connection, SQLiteTransaction transaction)
+        {
+            if (!TableHasColumn(connection, transaction, "games", "game_no"))
+            {
+                Logger.Info("[DatabaseManager] v23 → v24: games.game_no 列を追加します (#297 JSON 用の不変キー)");
+                using (var cmd = new SQLiteCommand("ALTER TABLE games ADD COLUMN game_no INTEGER", connection, transaction))
+                {
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            else
+            {
+                Logger.Info("[DatabaseManager] v23 → v24: games.game_no は既に存在 (列追加を skip)");
+            }
+
+            // 既存の最大採番値。列を追加した直後は全行 NULL なので 0 から始まる。
+            // ここだけは走査を transaction 内で行う。migration は起動時に 1 度きり、かつ DB を排他で握る
+            // 局面なので、他の書き込みを待たせる相手がいない (通常運用の games INSERT とは事情が違う)。
+            long next = ReadGameNoHighWaterMark(connection, transaction, ReadMaxGameNoFromRecords());
+
+            // 未採番の行に決定的な順序で連番を振る。ALTER 直後は全行、再実行時は 0 件。
+            var unnumbered = new List<string>();
+            using (var cmd = new SQLiteCommand(
+                "SELECT game_id FROM games WHERE game_no IS NULL ORDER BY game_id", connection, transaction))
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    unnumbered.Add(reader["game_id"].ToString());
+                }
+            }
+
+            foreach (string gameId in unnumbered)
+            {
+                next++;
+                using (var cmd = new SQLiteCommand(
+                    "UPDATE games SET game_no = @no WHERE game_id = @id", connection, transaction))
+                {
+                    cmd.Parameters.AddWithValue("@no", next);
+                    cmd.Parameters.AddWithValue("@id", gameId);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+
+            // backfill 後に UNIQUE INDEX を張る (先に張っても良いが、順序を揃えて意図を読みやすくする)。
+            EnsureGameNoUniqueIndex(connection, transaction);
+
+            // high-water mark を保存。以後の採番は AllocateNextGameNo がここから続きを取る。
+            WriteGameNoHighWaterMark(connection, transaction, next);
+
+            Logger.Info("[DatabaseManager] v23 → v24 migration 完了 (game_no を " + unnumbered.Count
+                + " 件に採番、次の採番は " + (next + 1) + " から)");
+        }
+
+        /// <summary>
+        /// (#297 PR2) 次に払い出せる番号の下限を、手に入る情報源**すべての最大値**として求める。
+        ///
+        /// 「どれが原本か」を決めない設計にしている。3 つの情報源はそれぞれ埋められない穴を持つが、
+        /// **穴が重なっていない**ので、最大値を採ると単独のどれよりも強くなるため:
+        ///
+        /// | 情報源 | ゲーム削除で下がる | DB 復元 / リセットで巻き戻る | 消えうる |
+        /// |---|---|---|---|
+        /// | (a) `responses/` の記録ファイル名 | しない | **しない** | SMB 断 / 誤削除 |
+        /// | (b) settings の <see cref="SettingsKeys.GameNoSeq"/> | しない | **する** | DB と運命を共にする |
+        /// | (c) `MAX(games.game_no)` | **する** | する | 同上 |
+        ///
+        /// - (a) が DB の系譜が切れる事故 (復元・リセット) を担当する。**実際に記録が参照している番号**が
+        ///   真値なので、これが最も信用できる。
+        /// - (b) は (a) が読めないとき (SMB 断・初回起動でファイルがまだ無いとき) を担当する。
+        /// - (c) は上 2 つが両方死んだときの最後の床。単独では最大番号のゲーム削除で下がるため使えない。
+        ///
+        /// 塞げないのは「(a) が読めない」かつ「DB を古い状態に復元した」の**二重障害**のみ。その場合
+        /// 番号の再利用が起こりうるので、(a) が読めなかったときは警告を残して気づけるようにする。
+        /// </summary>
+        /// <param name="recordsMax">
+        /// (a) の走査結果 = <see cref="ReadMaxGameNoFromRecords"/> の戻り値。**呼び出し側が transaction を開く前に
+        /// 取っておくこと**。この走査は `responses/` の日付フォルダを全部開くため、本番の SMB 共有では件数に比例して
+        /// 秒単位になりうる。書き込み transaction の中で行うと、その間 SQLite の書き込みロックを握り続け、
+        /// **他のキオスク / Manager の書き込みまで巻き添えで待たされる** (レビュー H-2)。
+        /// 引数で受け取る形にしてあるのは、「走査は外で済ませる」という前提をシグネチャに固定するため。
+        ///
+        /// **例外は起動時の migration だけ**（<see cref="MigrateV23ToV24"/>）。あちらは 1 度きりで、かつ DB を
+        /// 排他で握る局面なので待たせる相手がいない。通常運用の games INSERT からこの書き方を真似ないこと
+        /// （SMB 全走査を書き込みロック中に持ち込む事故が再発する）。
+        /// </param>
+        private static long ReadGameNoHighWaterMark(SQLiteConnection connection, SQLiteTransaction transaction, long recordsMax)
+        {
+            long stored = 0;
+            using (var cmd = new SQLiteCommand(
+                "SELECT value FROM settings WHERE key = @key", connection, transaction))
+            {
+                cmd.Parameters.AddWithValue("@key", SettingsKeys.GameNoSeq);
+                var v = cmd.ExecuteScalar();
+                if (v != null && v != DBNull.Value)
+                {
+                    long.TryParse(v.ToString(), out stored);
+                }
+            }
+
+            long maxUsed = 0;
+            using (var cmd = new SQLiteCommand("SELECT COALESCE(MAX(game_no), 0) FROM games", connection, transaction))
+            {
+                var v = cmd.ExecuteScalar();
+                if (v != null && v != DBNull.Value)
+                {
+                    maxUsed = Convert.ToInt64(v);
+                }
+            }
+
+            return Math.Max(Math.Max(stored, maxUsed), recordsMax);
+        }
+
+        /// <summary>
+        /// (#297 PR2) `responses/` に既にある記録が参照している最大の game_no を、**ファイル名だけ**から読む。
+        ///
+        /// 記録のファイル名は `&lt;unix_ts&gt;-&lt;game_no&gt;-&lt;uuid&gt;.json` (SPEC §7.5.3) なので、
+        /// ディレクトリ一覧を取るだけで判定でき、**1 ファイルも開かない**。本番は SMB 共有なので、
+        /// ファイルを開く回数 = ネットワーク往復回数になる。数千件を開くと体感できる待ちになるが、
+        /// 一覧なら数往復で済む。
+        ///
+        /// 全体アンケート (ゲームに紐づかない) はファイル名の番号部分が `0` なので自然に無視される。
+        /// 形式に合わないファイル (`.tmp` の書きかけ、旧形式、手で置かれた何か) は黙って読み飛ばす
+        /// — ここは「下限を求める」処理なので、読めないものがあっても過小評価になるだけで、
+        /// その分は settings / MAX(game_no) が補う。
+        ///
+        /// フォルダ自体が無い / 読めない場合は 0 を返し警告を残す (上記 docstring の二重障害の片側)。
+        /// **ゲーム追加はブロックしない**: 文化祭当日に SMB が一時的に不調というだけでスタッフの作業を
+        /// 止める方が実害が大きいため、警告に留めて続行する。
+        /// </summary>
+        /// <summary>
+        /// <see cref="ReadMaxGameNoFromRecords"/> の走査に費やしてよい時間 (ms)。超えたら打ち切る。
+        /// 打ち切っても得られるのは「見た範囲の最大」= 正しい下限なので、結果は壊れない (詳細は本体のコメント)。
+        /// </summary>
+        private const int ScanTimeBudgetMs = 1500;
+
+        internal static long ReadMaxGameNoFromRecords()
+        {
+            long max = 0;
+            bool anyCategoryScanned = false;
+            // **UI スレッドを長時間止めない** (レビュー H-2)。この走査はゲーム追加のたびに同期で走り、
+            // 本番は SMB 共有なので件数に比例して秒単位になりうる。「ゲーム追加でフリーズ」は既知の
+            // 高優先 issue (#292) でもあり、そこに新しい原因を足すわけにはいかない。
+            //
+            // **途中で打ち切っても壊れない**のがこの設計の要点: ここが求めているのは番号の**下限**で、
+            // 打ち切った結果は「見た範囲での最大」= やはり正しい下限。しかも通常運用では
+            // (b) settings.game_no_seq が同じ値以上を持っているので、実質的に精度は落ちない。
+            // この走査が本当に効くのは「DB を古い状態に復元した」ときで、そのときは打ち切りの
+            // 警告がログに残る (SPEC §7.5.3 が「(a) が読めなければ警告を残す」と定める経路)。
+            var budget = System.Diagnostics.Stopwatch.StartNew();
+            bool budgetExceeded = false;
+
+            // PathManager.BaseDirectory の解決自体が失敗しうる (install レイアウトを見つけられない実行文脈)。
+            // ここは「番号の下限を求める」補助情報なので、解決できなければ 0 を返して DB 側の情報に委ねる。
+            // 内側の try と分けているのは、path 解決の失敗 (全カテゴリに影響) と個別フォルダの読み取り失敗
+            // (片方だけ影響) を別々のログにして切り分けられるようにするため。
+            string[] categoryFolders;
+            try
+            {
+                categoryFolders = new[] { PathManager.PlayRecordsFolder, PathManager.SurveysFolder };
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[DatabaseManager] (#297) 記録フォルダの場所を解決できませんでした (DB 側の情報のみで採番します): "
+                    + ex.GetType().Name + ": " + ex.Message);
+                return 0;
+            }
+
+            foreach (string categoryFolder in categoryFolders)
+            {
+                try
+                {
+                    if (!Directory.Exists(categoryFolder))
+                    {
+                        // まだ 1 件も記録が無い (= 開催前 / 新規 install)。異常ではない。
+                        continue;
+                    }
+                    anyCategoryScanned = true;
+
+                    foreach (string dayFolder in Directory.EnumerateDirectories(categoryFolder))
+                    {
+                        foreach (string file in Directory.EnumerateFiles(dayFolder, "*.json"))
+                        {
+                            long no = ParseGameNoFromRecordFileName(Path.GetFileName(file));
+                            if (no > max)
+                            {
+                                max = no;
+                            }
+                        }
+                        // 日付フォルダの区切りで見る (ファイル 1 件ごとに時計を読むと走査自体が遅くなる)。
+                        if (budget.ElapsedMilliseconds > ScanTimeBudgetMs)
+                        {
+                            budgetExceeded = true;
+                            break;
+                        }
+                    }
+                    if (budgetExceeded)
+                    {
+                        break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Logger.Warn に例外オーバーロードが無いため message に畳んで残す (Error にはあるが、
+                    // ここは続行可能な劣化なので WARN が適切)。
+                    Logger.Warn("[DatabaseManager] (#297) 記録フォルダを走査できませんでした (番号の再利用を防ぐ判定材料が 1 つ欠けます): "
+                        + categoryFolder + " — " + ex.GetType().Name + ": " + ex.Message);
+                }
+            }
+
+            if (budgetExceeded)
+            {
+                Logger.Warn("[DatabaseManager] (#297) 記録フォルダの走査を " + ScanTimeBudgetMs
+                    + "ms で打ち切りました (見た範囲の最大 game_no = " + max + ")。番号の下限としては有効ですが、"
+                    + "バックアップから DB を古い状態へ復元した直後は番号を再利用する可能性があります");
+            }
+            else if (anyCategoryScanned)
+            {
+                Logger.Info("[DatabaseManager] (#297) 記録ファイル名から読んだ最大 game_no = " + max);
+            }
+            return max;
+        }
+
+        /// <summary>
+        /// (#297 PR2) 記録ファイル名 `&lt;unix_ts&gt;-&lt;game_no&gt;-&lt;uuid&gt;.json` の game_no 部分を読む。
+        /// 形式に合わなければ 0 (= 判定に寄与しない)。
+        ///
+        /// 旧形式 `&lt;unix_ts&gt;-&lt;uuid&gt;.json` を弾いているのは**ハイフン区切りの個数判定** (`parts.Length &lt; 3`)。
+        /// uuid はハイフンを含まない 32 桁の 16 進 (`responses_writer.gd::_new_uuid`) なので旧形式は必ず 2 個になる。
+        /// 数値解析の失敗に頼っているわけではない (そこまで到達しない)。
+        /// </summary>
+        private static long ParseGameNoFromRecordFileName(string fileName)
+        {
+            string[] parts = fileName.Split('-');
+            if (parts.Length < 3)
+            {
+                return 0;
+            }
+            return long.TryParse(parts[1], out long no) && no > 0 ? no : 0;
+        }
+
+        /// <summary>(#297 PR2) game_no の high-water mark を settings に保存する (単調増加、下げない)。</summary>
+        private static void WriteGameNoHighWaterMark(SQLiteConnection connection, SQLiteTransaction transaction, long value)
+        {
+            using (var cmd = new SQLiteCommand(
+                "INSERT INTO settings (key, value) VALUES (@key, @value) " +
+                "ON CONFLICT(key) DO UPDATE SET value = @value", connection, transaction))
+            {
+                cmd.Parameters.AddWithValue("@key", SettingsKeys.GameNoSeq);
+                cmd.Parameters.AddWithValue("@value", value.ToString());
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>
+        /// (#297 PR2) 新しいゲーム 1 件分の `game_no` を採番して返す (呼び出し側の transaction 内で実行すること)。
+        /// high-water mark を +1 して即座に settings へ書き戻すため、同一 transaction 内で複数回呼んでも重複しない。
+        /// GameRepository の INSERT 経路から使う。
+        /// </summary>
+        /// <param name="recordsMax">
+        /// <see cref="ReadMaxGameNoFromRecords"/> の戻り値。**transaction を開く前に取ること** (理由は
+        /// <see cref="ReadGameNoHighWaterMark"/> の同名引数を参照)。
+        /// </param>
+        internal static long AllocateNextGameNo(SQLiteConnection connection, SQLiteTransaction transaction, long recordsMax)
+        {
+            long next = ReadGameNoHighWaterMark(connection, transaction, recordsMax) + 1;
+            WriteGameNoHighWaterMark(connection, transaction, next);
+            return next;
+        }
+
         /// <summary>
         /// (#253) intro_slides テーブルを作成 (CreateTables / MigrateV20ToV21 共用 helper)。
         /// スクリーンセーバー → ブラウズ間に表示するイントロガイドのスライド群。画像は `guide/` にファイル別管理し、
@@ -2310,7 +2668,8 @@ namespace TonePrism.Manager
         /// </summary>
         private static readonly Dictionary<string, string[]> ExpectedSchema = new Dictionary<string, string[]>
         {
-            { "games", new[] { "game_id", "title", "description", "release_year", "genre", "min_players", "max_players", "difficulty", "play_time", "controller_support", "supported_connection", "thumbnail_path", "background_path", "executable_path", "display_order", "is_visible", "controls", "key_mapping", "arguments", "version" } },
+            // (#297 PR2 / DB v24) game_no = プレイ記録・アンケート JSON が指す不変の内部番号 (MigrateV23ToV24 参照)。
+            { "games", new[] { "game_id", "title", "description", "release_year", "genre", "min_players", "max_players", "difficulty", "play_time", "controller_support", "supported_connection", "thumbnail_path", "background_path", "executable_path", "display_order", "is_visible", "controls", "key_mapping", "arguments", "version", "game_no" } },
             { "game_versions", new[] { "id", "game_id", "version", "executable_path", "arguments", "description", "title", "genre", "min_players", "max_players", "difficulty", "play_time", "controller_support", "supported_connection", "thumbnail_path", "background_path", "update_note", "registered_at" } },
             { "developers", new[] { "id", "game_id", "last_name", "first_name", "grade", "version_id" } },
             // (累積監査 round 4 Low-28/29) game_genres は v18 で DROP した dead table のため除去 (MigrateV17ToV18 参照)。

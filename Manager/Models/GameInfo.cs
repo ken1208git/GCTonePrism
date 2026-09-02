@@ -15,6 +15,22 @@ namespace TonePrism.Manager.Models
         public string GameId { get; set; }
 
         /// <summary>
+        /// (#297 PR2 / DB v24) ゲームに一度だけ振られる不変の内部番号。
+        ///
+        /// プレイ記録・アンケートの JSON (`responses/`) はこの番号でゲームを指す。<see cref="GameId"/> は
+        /// スタッフが手入力する文字列でフォルダ名を兼ね、改名できてしまうため、JSON に書くと ID 改名で
+        /// 過去の記録が全部どのゲームのものか分からなくなる (DB の FK と違い JSON には改名追随の仕組みが無い)。
+        ///
+        /// **UI には出さない**。部員が触るのは今までどおり <see cref="GameId"/> (「ゲームID」) で、本番号は
+        /// 完全に内部専用。ログに出すのは番号を実際に使う処理 (JSON 書込・集計) に限り、
+        /// その場合も <c>game_id (no.12)</c> の形で人間が引き当てられるよう併記する。
+        ///
+        /// 採番は games への INSERT 時のみ (<c>GameRepository.AddGameRowInTransaction</c>)。UPDATE 経路は本値を
+        /// 書かないため不変性が構造的に保たれる。v24 migration 前の DB から読んだ場合は null になりうる。
+        /// </summary>
+        public long? GameNo { get; set; }
+
+        /// <summary>
         /// ゲームタイトル
         /// </summary>
         public string Title { get; set; }

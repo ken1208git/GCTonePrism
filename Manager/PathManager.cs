@@ -225,7 +225,34 @@ namespace TonePrism.Manager
         /// </summary>
         public static string LauncherSessionsFolder
         {
-            get { return Path.Combine(BaseDirectory, "responses", "launcher_sessions"); }
+            get { return Path.Combine(ResponsesFolder, "launcher_sessions"); }
+        }
+
+        /// <summary>
+        /// (#297) Launcher が出力するプレイ記録・アンケートの保管場所 (`&lt;install&gt;/responses/`)。
+        /// 直下は Manager ↔ Launcher の IPC 用ファイル、subfolder は data drop (SPEC §6.5 / §7.5.3)。
+        /// </summary>
+        public static string ResponsesFolder
+        {
+            get { return Path.Combine(BaseDirectory, "responses"); }
+        }
+
+        /// <summary>
+        /// (#297) プレイ記録の data drop folder (`&lt;install&gt;/responses/play_records/`)。
+        /// 配下は日付フォルダ (`YYYY-MM-DD/`)、その中に `&lt;unix_ts&gt;-&lt;game_no&gt;-&lt;uuid&gt;.json`。
+        /// </summary>
+        public static string PlayRecordsFolder
+        {
+            get { return Path.Combine(ResponsesFolder, "play_records"); }
+        }
+
+        /// <summary>
+        /// (#297) アンケートの data drop folder (`&lt;install&gt;/responses/surveys/`)。命名規則は
+        /// <see cref="PlayRecordsFolder"/> と同じ (全体アンケートは game_no 部分が `0`)。
+        /// </summary>
+        public static string SurveysFolder
+        {
+            get { return Path.Combine(ResponsesFolder, "surveys"); }
         }
 
         /// <summary>

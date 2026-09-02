@@ -1491,6 +1491,15 @@ minor bump 判断: SemVer pre-1.0 原則 (= 0.x で breaking change は minor bu
 
 ## Launcher（ランチャー本体）
 
+### [Launcher v0.11.9] - 2026-09-03
+
+#### Changed — DB v24（`games.game_no`）への追従（#297 PR2）
+
+- **`CURRENT_DB_VERSION` を 23 → 24 へ**（Manager `SchemaManager.CurrentDbVersion` と歩調を合わせる）。v24 は `games.game_no` の追加（#297 PR2、詳細は Manager v0.33.0 を参照）。
+- **`GameInfo.game_no` を追加し `GameRepository` で読む**: プレイ記録・アンケートの JSON がゲームを指す不変キー。`get_all_games` / `get_game_by_id` は `SELECT *` なので v24 以降の DB では自動的に含まれる。**v24 未満の DB / 未採番行では `-1`** になり、この場合は記録を書き出さない契約（書込側の実装は続く PR）。
+- 本 PR の Launcher 側は**読み取りの配線のみ**で、来場者から見た挙動は一切変わらない（JSON の書き出しはまだ行わない）。
+- bump 判断: 内部配線のみ（破壊的変更・来場者向けの挙動変更なし）。patch（v0.11.8 → v0.11.9）。Manager v0.33.0 と同 PR。
+
 ### [Launcher v0.11.8] - 2026-06-11
 
 #### Changed (アプリ表示名の整理)
@@ -2327,6 +2336,32 @@ PR #150 で dir rename (`GCTonePrism_Launcher/` → `Launcher/`) に連動して
 ---
 
 ## Manager（管理ソフト）
+
+### [Manager v0.33.0] - 2026-09-03
+
+#### Added — `games.game_no`（プレイ記録・アンケート JSON 用の不変キー）を追加（`feature/game-no-key`、#297 PR2 / #34 / #35）
+
+- **DB スキーマ v23 → v24**: `games` に **`game_no INTEGER`**（+ UNIQUE INDEX `idx_games_game_no`）を追加。ゲームに一度だけ振られる**不変の内部番号**で、プレイ記録・アンケートの JSON（`responses/`）がゲームを指す唯一のキーになる。
+- **なぜ必要か**: #297 でプレイ記録・アンケートは SQLite を離れ JSON になった。DB の FK は ID 改名に追随できるが **JSON にその仕組みは無い**ため、`game_id`（スタッフが手入力する文字列・`games/<game_id>/` のフォルダ名兼用・**改名可**）を JSON に書くと、ゲーム ID を改名した瞬間に過去の全記録がどのゲームのものか分からなくなる。記録がまだゼロの今のうちにキーを確定させるのが最安。
+- **主キーは差し替えない**: 当初案（`game_id` を `slug` に降格し整数 `id` を主キーにする）は、子テーブル 3 つ（`game_versions` / `developers` / `store_section_games`）の FK 貼り替えと `game_id` / `GameId` 365 箇所の語彙変更を伴い、本番稼働 DB への主キー手術になる。JSON を腐らせないために必要なのは「不変の整数キー」だけなので、**列を 1 本増やすだけ**に留めた（`ALTER TABLE ADD COLUMN` + backfill + INDEX のみ、テーブル recreate なし）。既存コードへの影響はゼロで、「ゲームID」という部員向けの語彙・UI・docs も一切変わらない。
+- **採番と番号の再利用防止**: `MigrateV23ToV24` が既存行へ `game_id` 昇順で backfill し（開始値は下記 3 情報源の最大値の次。記録が 1 件も無い通常の移行では 1 から）、以降は `GameRepository.AddGameRowInTransaction` が games の INSERT と同一トランザクションで払い出す。払い出す値は **(a) `responses/` の記録ファイル名から読んだ最大 `game_no` / (b) `settings.game_no_seq` / (c) `MAX(games.game_no)` の最大値 + 1**。
+- **なぜ 3 つ見るのか**: それぞれ埋められない穴があり、しかも**穴が重なっていない**ため。(c) は最大番号のゲームを削除すると下がる。(b) はバックアップ復元・DB リセットで巻き戻る（settings は DB の中なので DB と運命を共にする）。(a) は DB の外にあるので両方を越えて生き残るが、SMB 断や誤削除で読めなくなりうる。**「実際に記録が参照している番号」が真値**という発想で (a) を主情報源に据え、(b)(c) をその補完に置いた。これにより「復元後に追加したゲームが、削除済みゲームの過去の記録を引き継ぐ」という**静かなデータ破損**（JSON は番号しか持たないので誰も気づけない）を構造的に防ぐ。塞げないのは「(a) が読めない」かつ「DB を古い状態に復元した」の二重障害のみで、その場合は警告ログを残す。
+- **走査コスト**: 記録のファイル名が `<unix_ts>-<game_no>-<uuid>.json` なので、**ディレクトリ一覧を取るだけで済み 1 ファイルも開かない**。本番は SMB 共有で「ファイルを開く回数 = ネットワーク往復回数」になるため、この差は大きい（ローカル実測で 3,000 件・全件パース 220ms に対し一覧のみ 13ms）。走査失敗時もゲーム追加はブロックせず警告に留める（会期中に SMB が一時的に不調というだけでスタッフの作業を止める方が実害が大きい）。
+- **走査は書き込みトランザクションの外で行う**: 一覧だけとはいえ SMB 越しの全走査は件数に比例して伸びうる。これを games の INSERT と同じトランザクションの中で行うと、その間 SQLite の書き込みロックを握り続け、**他のキオスク / Manager の書き込みまで巻き添えで待たせる**（ゲーム 1 本の追加が全台に波及する）。走査結果は `AllocateNextGameNo` の引数として渡す形にし、「外で済ませてから開く」という前提をシグネチャに固定した。migration だけは例外で、起動時に 1 度きり・DB を排他で握る局面なので待たせる相手がいない。
+- 記録ファイル名のパーサの docstring を実装に合わせた（レビュー Low）: 旧形式を弾いているのは「uuid が 16 進なので数値解析に失敗する」からではなく、**ハイフン区切りの個数判定**（uuid はハイフンを含まない 32 桁の 16 進なので旧形式は必ず 2 個）。次の読み手が `TryParse` 側を load-bearing だと誤解しないようにした。
+- **v0 fast-path（版数管理前の古い DB）の回帰テストに `game_no` の検証を追加**（レビュー指摘）: v0 経路は migration chain を通らず版数を直接 stamp するため、各 migration を明示適用しないと「中身は古いのに最新を名乗る」穴が空く。ところが既存テストは `GetTargetDatabaseVersion()` との一致しか見ておらず、**v24 でも緑のまま通ってしまう**状態だった。列の存在・backfill 済み（NULL / 0 が無い）・high-water mark の一致まで固定し、テスト名も版数固定 (`ReachesV23`) をやめた。
+- **`responses/` のパスをもう 1 箇所 SoT に寄せた**（レビュー指摘）: 「2 箇所のハードコードを `PathManager.ResponsesFolder` に置き換えた」と書きながら、`LauncherLogsRootBridge` の 1 箇所が残っていた。
+- **記録フォルダの走査に時間予算（1.5 秒）を設けた**（レビュー指摘）: この走査は**ゲーム追加のたびに UI スレッドで同期実行**され、本番の SMB 共有では件数に比例して秒単位になりうる。「ゲーム追加でフリーズ」は既に高優先の別 issue（#292）になっている経路なので、そこへ新しい原因を足すわけにいかない。**途中で打ち切っても壊れない**のがこの設計の要点で、求めているのは番号の**下限**＝打ち切った結果も正しい下限。通常運用では `settings.game_no_seq` が同じ値以上を持つので実質的な精度低下も無い。打ち切ったときは警告を残す（SPEC §7.5.3 が「(a) が読めなければ警告を残す」と定める経路）。
+- **v0 fast-path（版数管理前の古い DB）の回帰テストに `game_no` の検証を追加**（レビュー指摘）: v0 経路は migration chain を通らず版数を直接 stamp するため、各 migration を明示適用しないと「中身は古いのに最新を名乗る」穴が空く。ところが既存テストは `GetTargetDatabaseVersion()` との一致しか見ておらず、**v24 でも緑のまま通ってしまう**状態だった。列の存在・backfill 済み（NULL / 0 が無い）・high-water mark の一致まで固定し、テスト名も版数固定 (`ReachesV23`) をやめた。
+- **`responses/` のパスをもう 1 箇所 SoT に寄せた**（レビュー指摘）: 「2 箇所のハードコードを `PathManager.ResponsesFolder` に置き換えた」と書きながら、`LauncherLogsRootBridge` の 1 箇所が残っていた。
+- **走査を外で済ませる契約は、migration だけが例外**であることを docstring に内包させた（レビュー Low-2）。「必ず transaction の外で」と無条件に書いていたが `MigrateV23ToV24` は内側で評価しており、契約と実装が食い違ったままだと「migration と同じ書き方でいい」と別経路にコピーされて元の事故が再発する。
+- **`PathManager` に `ResponsesFolder` / `PlayRecordsFolder` / `SurveysFolder` を追加**: 従来 `"responses"` は 2 箇所でハードコードされていた。走査でこのパスを使うため、Launcher 側の `path_manager.gd` と対になる SoT としてアクセサ化した。
+- **不変性の担保**: `game_no` を書く経路は games の INSERT **のみ**。UPDATE 経路（`UpdateGameRowInTransaction`）は本列に一切触れないため、ゲーム内容の更新でも版の差し替えでも番号は動かない（回帰テスト `GameNo_SurvivesGameUpdate` で固定）。
+- **露出方針**: GUI には出さない（部員が触るのは今までどおり「ゲームID」）。ログに出すのは `game_no` を実際に使う処理（JSON 書込・集計）に限り、`game_id (no.12)` の形で併記する（JSON は番号しか持たないため、障害調査でログだけから記録とゲームを突き合わせられるようにする）。詳細は SPEC §7.5.3「game_no の設計」。
+- **`CreateTables` の INDEX 作成ガード**: `CreateTables` は migration より**前**に毎回走るため、v23 以前の DB では `game_no` 列が無い状態で UNIQUE INDEX 作成に到達する。列の存在を確認してから張るようにし、無ければ後続の `MigrateV23ToV24` に委ねる（無ガードだと "no such column: game_no" で起動が落ちる）。
+- **テスト基盤**: 採番が `PathManager` 経由で `responses/` を走査するようになったため、`SchemaMigrationTests` も静的 base dir seam を使う側になった。`[Collection("PathManagerStatic")]` に追加して直列化し（未追加だと #409 と同じ並列競合で flaky 化する）、各テストが一時 install dir を向くようにして実 install の記録を読まない・汚さないようにした。
+- **検証**: 単体テスト 289/289 緑（新規 7 件 = backfill / 再実行で振り直さない / 削除後の番号非再利用 / 更新で不変 / 記録が参照する番号を再利用しない / `.tmp`・旧形式・`0` に惑わされない / 記録フォルダ不在でも動く）。加えて**本番 DB のコピー**に対する実データ round-trip を実施し、27 ゲームへ 1〜27 が採番・`game_no_seq=27`・`integrity_check ok`・`foreign_key_check` 違反ゼロ・全子テーブルの行数不変・v24 到達を確認（SPEC §7.6 のワークフロー準拠、作業 DB は未変更）。
+- bump 判断: 機能追加 + DB スキーマ変更（既存データは非破壊・列追加のみ）。**minor（v0.32.0 → v0.33.0）**。Launcher v0.11.9 と同 PR。
 
 ### [Manager v0.32.0] - 2026-06-30
 

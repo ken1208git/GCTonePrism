@@ -159,5 +159,23 @@ namespace TonePrism.Manager.Services
         /// 新規 key = settings への行追加に過ぎず schema migration / CurrentDbVersion bump は不要。
         /// </summary>
         public const string DashboardDismissedFindings = "dashboard_dismissed_findings";
+
+        // ----- (#297 PR2) プレイ記録・アンケート JSON 用の不変キー -----
+
+        /// <summary>
+        /// (#297 PR2 / DB v24) `games.game_no` の採番カウンタ (high-water mark = 最後に払い出した番号)。
+        /// 単調増加のみで、ゲームを削除しても下がらない。
+        ///
+        /// **なぜ MAX(game_no)+1 ではなくカウンタなのか**: 最大番号のゲームを削除すると `MAX+1` は
+        /// その番号を再利用してしまい、次に追加したゲームが削除済みゲームの過去のプレイ記録・アンケートを
+        /// 横取りする (JSON 側は番号しか持たないので気づけない = 静かなデータ破損)。high-water mark なら
+        /// 一度使った番号は永久に再利用されない。
+        ///
+        /// 読み書きは <c>SchemaManager.ReadGameNoHighWaterMark</c> /
+        /// <c>SchemaManager.AllocateNextGameNo</c> 経由 (呼び出し側の transaction 内で実行するため
+        /// SettingsRepository は使わない。SettingsRepository は自前で connection を開くので、
+        /// ゲーム追加の transaction と別 transaction になり atomic 性が崩れる)。
+        /// </summary>
+        public const string GameNoSeq = "game_no_seq";
     }
 }
