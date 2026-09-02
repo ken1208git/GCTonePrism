@@ -16,7 +16,7 @@ namespace TonePrism.Manager.Shell.GameForm
     /// 検証 → GameVersionSetValidator → アクティブ版確認 → SessionConflict → GameIdRenameService →
     /// VersionFolderRenameService → UpdateVersionsAndGame → 失敗時 Rollback → GoBack + 成果通知。
     /// ProcessingDialog / 各 MessageBox は WinForms を <see cref="ShellOwner"/> 渡しで流用 (挙動保存)。
-    /// 外部画像取込 / 版即時削除 は #324 follow-up。
+    /// 外部画像は保存時に <see cref="GameImageSaveImporter"/> 経由で <c>.toneprism/</c> へ取り込む (#386)。版即時削除は #393/#387。
     /// 旧との差異 (意図的): 表示中版の version が SemVer 不正な場合、旧 btnOK は clamp 表示値 (v0.0.0) を書き戻して
     /// 保存を「通して」いたが、本実装は VersionName(=生値) を SoT とするため GameVersionSetValidator が不正としてブロックする。
     /// 不正値 (例 "abc") を黙って v0.0.0 に潰す silent データ消失を避け、load 時の警告 + 実行可能なエラー文言で直させる方針。
@@ -137,10 +137,7 @@ namespace TonePrism.Manager.Shell.GameForm
 
         private void Save(EditViewModel vm, Action onSuccess)
         {
-            // 1. 表示中版を in-memory commit (旧 dup-check 直前の SaveGameDataToVersion(currentSelected))。
-            if (vm.SelectedVersion != null) vm.CommitToVersion(vm.SelectedVersion);
-
-            // 2. 基本検証。gameId/title は INotifyDataErrorInfo、exe/画像は GameFormHelper。
+            // 1. 基本検証 (gameId/title)。
             vm.ValidateAll();
             if (vm.HasErrors)
             {
@@ -148,9 +145,8 @@ namespace TonePrism.Manager.Shell.GameForm
                     WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
                 return;
             }
-            // 実行ファイルは拡張子無制約 (旧 EditGameForm.ValidateInput は存在+フォルダ内のみ検証)。.exe 限定にすると
-            // 非.exe で起動する既存ゲームを編集保存しようとした瞬間に弾かれる回帰になるため null を渡す (Browse の .exe
-            // 既定フィルタは UX ガイドとして残す)。画像は従来どおり拡張子チェックする。
+            // exe/画像の拡張子・存在を検証 (取り込み前。外部 source も存在すれば通る)。実行ファイルは拡張子無制約
+            // (.exe 限定にすると非.exe で起動する既存ゲームの編集保存が弾かれる回帰になるため null。画像は従来どおり拡張子チェック)。
             if (!GameFormHelper.ValidateFilePath(vm.ExecutablePath, vm.GameFolder, null, true, "実行ファイル", out string pathErr)
                 || !GameFormHelper.ValidateFilePath(vm.ThumbnailPath, vm.GameFolder, GameFormHelper.ImageFileExtensions, false, "サムネイル画像", out pathErr)
                 || !GameFormHelper.ValidateFilePath(vm.BackgroundPath, vm.GameFolder, GameFormHelper.ImageFileExtensions, false, "背景画像", out pathErr))
@@ -159,11 +155,8 @@ namespace TonePrism.Manager.Shell.GameForm
                 return;
             }
 
-            // 2b. gameFolder 外の exe / 画像を保存前にブロック (旧 EditGameForm の inside-folder 検証を踏襲)。
-            //     これが無いと CommitToVersion→ToRel が外部パスを黙って null 化し、画像は silent 消失 (プレビューは
-            //     絶対パスで出るので「設定できた」と誤認)、exe は保存時に NOT NULL 違反で (しかも gameId/版フォルダ rename
-            //     を実行した後に) 落ちる。外部画像の版フォルダ自動コピーは #324 PR4 送りのため、PR1 では「フォルダ内に
-            //     置いてから選択」を促してブロックするに留める。
+            // 2. 実行ファイルは gameFolder 内必須 (exe の外部取り込みは #386 対象外 = 画像のみ取り込む)。これが無いと
+            //    CommitToVersion→ToRel が外部 exe を null 化し、保存時に NOT NULL 違反で (しかも rename 実行後に) 落ちる。
             if (!IsInsideGameFolder(vm, vm.ExecutablePath))
             {
                 WinForms.MessageBox.Show(Owner,
@@ -172,17 +165,12 @@ namespace TonePrism.Manager.Shell.GameForm
                     "入力エラー", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
                 return;
             }
-            foreach (var (label, path) in new[] { ("サムネイル画像", vm.ThumbnailPath), ("背景画像", vm.BackgroundPath) })
-            {
-                if (IsInsideGameFolder(vm, path)) continue;
-                WinForms.MessageBox.Show(Owner,
-                    label + "がゲームフォルダ外を指しています:\n  " + path +
-                    "\n\n外部画像の取り込みは未対応です。画像をゲームフォルダ内に置いてから選び直してください:\n  " + vm.GameFolder,
-                    "入力エラー", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
-                return;
-            }
 
-            // 3. 版セット検証 (空/不正version/正規化重複/人数)。現版は手順1で commit 済なので scan 対象に含まれる。
+            // 3. 表示中版を in-memory commit。画像の外部パスは ToRelOrKeepExternal で絶対のまま残り (#386 指摘1)、
+            //    後段 (手順7) で全版まとめて .toneprism へ取り込む。
+            if (vm.SelectedVersion != null) vm.CommitToVersion(vm.SelectedVersion);
+
+            // 4. 版セット検証 (空/不正version/正規化重複/人数)。現版は手順3で commit 済なので scan 対象に含まれる。
             var v = new GameVersionSetValidator().Validate(vm.Versions);
             if (v.VersionStringIssueCount > 0)
             {
@@ -207,7 +195,48 @@ namespace TonePrism.Manager.Shell.GameForm
                 return;
             }
 
-            // 4. アクティブ版 (= ランチャー起動対象) の暗黙切替確認。
+            // 4b. (#386 指摘2) 全版の実行ファイルが内部 (非 null) か検証。非選択版に外部 exe が commit されていると ToRel で
+            //     null 化され、選択版のみ見る手順2のガードを通過し、高コストな rename を実行した後に DB で NOT NULL 違反で
+            //     落ちる。画像は手順7で全版取り込みするが exe は取り込み非対応なので、rename 前にここで弾く。
+            var missingExe = vm.Versions.Where(x => x != null && string.IsNullOrEmpty(x.ExecutablePath)).ToList();
+            if (missingExe.Count > 0)
+            {
+                WinForms.MessageBox.Show(Owner,
+                    "以下のバージョンの実行ファイルが未設定です:\n\n  " +
+                    string.Join("\n  ", missingExe.Select(x => x.Version ?? "(未設定)")) +
+                    "\n\nバージョン管理で該当版を選び、ゲームフォルダ内の実行ファイルを指定してから保存してください。",
+                    "実行ファイルの入力エラー (" + missingExe.Count + " 件)", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
+                return;
+            }
+
+            // 4c. (#386 round4 指摘1/2) 全版の外部画像 (= 手順7の取り込み対象) を拡張子・存在で事前検証してブロック。手順1の
+            //     検証は選択版 (VM プロパティ) しか見ないが、手順7は vm.Versions 全版を取り込む。非選択版に readme.txt を
+            //     サムネ指定したり、実体が消えた外部画像を残したまま保存すると、無検証で .toneprism に取り込まれる / 取り込み時に
+            //     診断不能な例外で停止する。ここで版名・役割・理由つきで弾く (exe 4b と対称)。内部/相対は取り込み対象外なので
+            //     検証しない (既存の内部画像・pre-existing の dangling は本保存の責務外、RestoreReconciliationService が別途検出)。
+            var badImages = new List<string>();
+            foreach (var ver in vm.Versions)
+            {
+                if (ver == null) continue;
+                foreach (var (role, path) in new[] { ("サムネイル画像", ver.ThumbnailPath), ("背景画像", ver.BackgroundPath) })
+                {
+                    if (string.IsNullOrWhiteSpace(path) || !System.IO.Path.IsPathRooted(path)) continue;   // 空/相対 = 取り込み対象外
+                    if (PathConversionHelper.IsPathInside(vm.GameFolder, path)) continue;                   // 内部絶対も対象外
+                    string label = "版 " + (ver.Version ?? "(未設定)") + " の" + role;
+                    if (!GameFormHelper.ValidateFilePath(path, null, GameFormHelper.ImageFileExtensions, false, label, out string imgErr))
+                        badImages.Add("  " + imgErr);
+                }
+            }
+            if (badImages.Count > 0)
+            {
+                WinForms.MessageBox.Show(Owner,
+                    "以下のバージョンの画像を取り込めません。バージョン管理で該当版を選び、画像を選び直してから保存してください:\n\n" +
+                    string.Join("\n", badImages),
+                    "画像の入力エラー (" + badImages.Count + " 件)", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
+                return;
+            }
+
+            // 5. アクティブ版 (= ランチャー起動対象) の暗黙切替確認。
             var selected = vm.SelectedVersion;
             if (selected != null && vm.InitialSelectedVersionId.HasValue && selected.Id != vm.InitialSelectedVersionId.Value)
             {
@@ -219,12 +248,60 @@ namespace TonePrism.Manager.Shell.GameForm
                 if (dr != WinForms.DialogResult.Yes) return;
             }
 
-            // 5. 他 PC session 競合の再 check (DB write 直前)。
+            // 6. 他 PC session 競合の再 check (DB write 直前)。
             if (SessionConflictHelper.CheckBeforeWrite("ゲーム編集") == WinForms.DialogResult.Cancel) return;
 
-            bool assetsChanged = false;
+            // 7. (#386) 全版の外部画像を .toneprism/ へ取り込み、版オブジェクトのパスを相対化する。CommitToVersion が
+            //    外部画像を絶対のまま残すので、選択版だけでなく全版を走査する (指摘1: 版切替で非選択版の外部画像が
+            //    silent loss するのを防ぐ)。取り込み先フォルダは rename 前のディスク leaf (OriginalVersionByDbId)。後段の
+            //    gameId/版 rename が .toneprism ごとフォルダ移動 + 相対パス prefix 書換を行うため整合する。
+            //    abort 時も取り込みファイルは削除しない: 削除すると非選択版の相対パスが dangling になり retry で silent loss
+            //    する (GameImageSaveImporter の doc 参照)。残せば retry でその実体を解決して保存成功・放棄時の orphan は無害。
+            //    コピーは同期 (画像は通常小サイズで軽量。多版×大画像で体感が出るなら ProcessingDialog 化を検討)。
+            //    取り込み先の gameId は ver.GameId を使う (rename に追従する live 値。ApplyGameIdRename が GameFolder と同時に
+            //    更新する)。round4 指摘3: OriginalGame.GameId は rename 後も旧 ID のままで、gameId rename 済→DB 失敗→retry の
+            //    recovery 経路で GetGameFolder(旧ID) が削除済フォルダを復活させ、後続 DecideCollision を恒久ブロックする穴になる。
+            bool imagesImported = false;
+            try
+            {
+                foreach (var ver in vm.Versions)
+                {
+                    if (ver == null) continue;
+                    if (!vm.OriginalVersionByDbId.TryGetValue(ver.Id, out var dv) || string.IsNullOrWhiteSpace(dv))
+                    {
+                        // (#386 指摘5) snapshot 欠落版は取り込み先 leaf が決まらない (新 leaf に作ると後続 rename と衝突)
+                        // ため skip + Warn (VersionFolderRenameService の defensive と挙動を揃える。現状 LoadVersions のみが
+                        // snapshot を populate するため到達しない。round3 指摘4: 将来 add-version UI を入れると、外部画像を持つ
+                        // snapshot 欠落版が skip され絶対パスのまま保存される footgun になるため、その際は exe ガード同様
+                        // 「外部画像が残る版はブロック」方向へ揃えること)。
+                        Logger.Warn("[EditGamePage] (#386) snapshot 欠落 version id=" + ver.Id + " ('" + (ver.Version ?? "(null)") + "') の画像取り込みを skip");
+                        continue;
+                    }
+                    ver.ThumbnailPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.ThumbnailPath, ver.GameId, dv, GameImageAssetHelper.ImageRole.Thumbnail, out bool t);
+                    ver.BackgroundPath = GameImageSaveImporter.ImportIfExternalToRelative(ver.BackgroundPath, ver.GameId, dv, GameImageAssetHelper.ImageRole.Background, out bool b);
+                    imagesImported |= t || b;
+                }
+            }
+            catch (Exception imgEx)
+            {
+                WinForms.MessageBox.Show(Owner, "画像の取り込みに失敗しました。\n\n" + imgEx.Message,
+                    "画像取り込みエラー", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
+                return;
+            }
 
-            // 6. gameId rename (フォルダ Move + DB)。GameIdRenameService に委譲。
+            // (#386 round3 指摘1) 画像取り込みは games/ への新バイト書込なので、rename が無くてもアセットバックアップ対象にする。
+            // これが無いと「画像だけ差し替えて保存」が DB-only バックアップになり、その世代から復元すると DB が指す画像が欠落する。
+            bool assetsChanged = imagesImported;
+
+            // (#386 round5 指摘1) 手順7で外部画像を取り込むと、既存の同名役割ファイル (.toneprism/thumbnail.png 等) を
+            // overwrite:true で上書きする = いま DB が指す画像そのものを差し替える。以降の abort (フォルダ衝突/rename 失敗/
+            // DB 失敗) では DB は旧のままでも画像実体は既に新しい。abort ダイアログにこの旨を添え「DB は更新前」を全体状態の
+            // 説明と誤読させない。恒久対応 (成功確定まで実体を触らない staging) は #417。
+            string importedNote = imagesImported
+                ? "\n\n※ この保存で選んだ画像は既にゲームフォルダ内へ取り込み済みです (旧画像を同じ名前で差し替えた場合、旧画像は上書きされています。元に戻すにはバックアップからの復元が必要)。"
+                : "";
+
+            // 8. gameId rename (フォルダ Move + DB)。GameIdRenameService に委譲。
             string oldGameId = vm.OriginalGame.GameId;
             string newGameId = (vm.GameId ?? "").Trim();
             if (!string.Equals(newGameId, oldGameId, StringComparison.Ordinal))
@@ -264,12 +341,13 @@ namespace TonePrism.Manager.Shell.GameForm
                 vm.ApplyGameIdRename(newGameId, newFolder);   // GameFolder + 全版 GameId を新 ID に追従
             }
 
-            // 7. 版フォルダ rename (VersionFolderRenameService)。完了済は DB 失敗時の rollback に使う。
+            // 9. 版フォルダ rename (VersionFolderRenameService)。完了済は DB 失敗時の rollback に使う。
             var verSvc = new VersionFolderRenameService();
             var plan = verSvc.BuildPlan(vm.GameFolder, vm.Versions, vm.OriginalVersionByDbId);
             if (plan.HasCollision)
             {
-                WinForms.MessageBox.Show(Owner, plan.CollisionMessage, "フォルダ衝突", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
+                // (#386) 取り込み済画像は削除しない (削除すると非選択版の相対パスが dangling になり retry で silent loss)。
+                WinForms.MessageBox.Show(Owner, plan.CollisionMessage + importedNote, "フォルダ衝突", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Warning);
                 return;
             }
             var completed = new List<VersionFolderRenameService.RenamePlan>();
@@ -286,7 +364,8 @@ namespace TonePrism.Manager.Shell.GameForm
                 }
                 if (exec != null && exec.Failed)
                 {
-                    WinForms.MessageBox.Show(Owner, exec.ErrorMessage, "フォルダリネーム失敗", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Error);
+                    // (#386) 取り込み済画像は削除しない (同上: retry での silent loss を避ける)。
+                    WinForms.MessageBox.Show(Owner, exec.ErrorMessage + importedNote, "フォルダリネーム失敗", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Error);
                     return;
                 }
                 if (exec != null) completed = exec.CompletedRenames;
@@ -295,7 +374,7 @@ namespace TonePrism.Manager.Shell.GameForm
             // (旧 EditGameForm は版 rename で AssetsChanged を立てない潜在ギャップがあったが、本 PR で是正)。
             if (completed.Count > 0) assetsChanged = true;
 
-            // 8. games 行 = 選択版の mirror + game レベル項目。1 transaction で版群と一緒に保存。
+            // 10. games 行 = 選択版の mirror + game レベル項目。1 transaction で版群と一緒に保存。
             var game = BuildGameFromSelected(vm, newGameId, selected);
             try
             {
@@ -305,6 +384,8 @@ namespace TonePrism.Manager.Shell.GameForm
             {
                 int rolledBack, rollbackFailures;
                 verSvc.Rollback(completed, vm.OriginalVersionByDbId, out rolledBack, out rollbackFailures);
+                // (#386) 取り込み済画像は削除しない (削除すると非選択版の相対パスが dangling になり、ロック解除後の
+                // retry で欠落ファイルを指す相対パスが保存成功してしまう = silent loss。残せば retry が実体を解決する)。
                 // (#382 (iii)) gameId rename は step6 で独立コミット済のため、ここで巻き戻るのは版フォルダ rename だけ。
                 // gameId を変えていた場合に「DB は更新前」と表示すると嘘になるので状態を正確に伝える
                 // (完全な rollback / transaction 統合は #382 で継続)。
@@ -315,11 +396,11 @@ namespace TonePrism.Manager.Shell.GameForm
                 WinForms.MessageBox.Show(Owner,
                     "バージョン情報 + ゲーム本体情報の DB 更新に失敗しました:\n  " + dbEx.Message + "\n\n  完了済の版フォルダ rename " + rolledBack +
                     " 件を元に戻しました" + (rollbackFailures > 0 ? " (rollback 失敗 " + rollbackFailures + " 件、ログ参照)" : "") +
-                    "。\n  " + stateNote, "DB 更新失敗", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Error);
+                    "。\n  " + stateNote + importedNote, "DB 更新失敗", WinForms.MessageBoxButtons.OK, WinForms.MessageBoxIcon.Error);
                 return;
             }
 
-            // 9. #295 アセットバックアップを【この場で確定実行】→ 一覧へ戻り→ 成功トーストを出す (レビュー High)。
+            // 11. #295 アセットバックアップを【この場で確定実行】→ 一覧へ戻り→ 成功トーストを出す (レビュー High)。
             //    旧実装はこれを GoBack 後の GameListPage.Loaded 発火に委ねていたが、(a) cache ページで Loaded が
             //    発火しないと通知もバックアップも silent skip、(b) 後で文脈外に遅延発火、(c) 次の編集が pending を
             //    上書きしてバックアップ消失、という framework 依存リスクがあった。保存成功直後に同期実行すれば、
@@ -327,6 +408,23 @@ namespace TonePrism.Manager.Shell.GameForm
             //    ので GoBack 前 (ページ有効中) に。成功通知は WinForms ダイアログをやめ、シェルレベルの非モーダル
             //    トーストにして GoBack 後の一覧の上に出す (#324 Snackbar 化)。
             Db.SessionBackupCoordinator.RunAfterOperation(Owner, assetsChanged, "ゲーム編集");
+            // (#386) 保存確定後: 各版の .toneprism から「どの版も参照しない役割ファイル」(拡張子変更後の旧ファイル等) を掃除
+            // (best-effort。保存済なので abort 安全問題なし＝import 時に消すと abort で旧画像消失+DB dangling になる穴を避けるため
+            // 成功後にやる・#417)。keep セットは全版の thumbnail/background を集めて完全相対パスで照合 (版跨ぎ参照でも live を消さない)。
+            try
+            {
+                var cleanupVersions = new List<string>();
+                var cleanupLivePaths = new List<string>();
+                foreach (var ver in vm.Versions)
+                {
+                    if (ver == null) continue;
+                    if (!string.IsNullOrWhiteSpace(ver.Version)) cleanupVersions.Add(ver.Version);
+                    if (!string.IsNullOrWhiteSpace(ver.ThumbnailPath)) cleanupLivePaths.Add(ver.ThumbnailPath);
+                    if (!string.IsNullOrWhiteSpace(ver.BackgroundPath)) cleanupLivePaths.Add(ver.BackgroundPath);
+                }
+                GameImageAssetHelper.CleanupStaleRoleFiles(vm.GameFolder, cleanupVersions, cleanupLivePaths);
+            }
+            catch (Exception cleanupEx) { Logger.Warn("[EditGamePage] (#386) .toneprism orphan 掃除に失敗 (保存は成功済)。" + cleanupEx.Message); }
             vm.MarkSaved();   // (#383) 保存成功 → 未保存なし基準に更新 (再ナビゲーションの割り込みが再確認しないように)
             // (#383 指摘6) 着地先は呼び出し側が決める (ボタン=一覧 / ガード=押した先)。ただし保存は既に成功済なので、
             // 遷移 (onSuccess) の失敗を TrySave の catch に飛ばすと「更新に失敗しました」と嘘表示になる。ここで握って

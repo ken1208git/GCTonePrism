@@ -15,6 +15,7 @@ namespace TonePrism.Manager.Tests
     /// 指す画像の欠落が silent だった。欠落→`BrokenIntroSlides` で検出・存在→非検出を確認する。
     /// PathManager は静的だがテスト seam (`SetBaseDirectoryForTest`) で一時 install dir に向ける。
     /// </summary>
+    [Collection("PathManagerStatic")]   // (#386) 静的 PathManager base dir 共有のため直列化 (既存の潜在 flaky も解消)
     public class RestoreReconciliationServiceTests : IDisposable
     {
         private readonly string _root;

@@ -20,7 +20,8 @@ namespace TonePrism.Manager.Shell.GameForm
     /// - 人数/難易度/時間/年を <c>int?</c> 直持ちにしたことで WinForms の null 保護スナップショット glue は不要に。
     /// - 範囲外の破損 DB 値 (人数 0/200 等) は load 時に [1,99] 等へ clamp。旧は「clamp 値を書き戻さない」snapshot 保護が
     ///   あったが、それを再現するとスナップショット復活で int? 化の意味が消えるため PR1 では簡素化 (= 破損は保存時に healing)。
-    /// - 外部画像取込 (gameFolder 外の画像選択 → 保存時コピー) は **#324 PR4 送り**。PR1 は既存パスの表示↔相対化のみ扱う。
+    /// - 外部画像 (gameFolder 外の選択) は保存時に <c>.toneprism/</c> へ取り込む (#386)。<see cref="CommitToVersion"/> は外部画像を
+    ///   null 化せず絶対のまま保持し (<c>ToRelOrKeepExternal</c>)、取り込みオーケストレーションは EditGamePage が全版に対して行う。
     /// 保存オーケストレーション(旧 btnOK_Click) は EditGamePage 側に置き、抽出済み service を呼ぶ。
     /// </summary>
     public class EditViewModel : GameFormViewModel
@@ -246,8 +247,10 @@ namespace TonePrism.Manager.Shell.GameForm
             v.ControllerSupport = ControllerSupport;
             v.SupportedConnection = SupportedConnection;
             v.ExecutablePath = ToRel(ExecutablePath);
-            v.ThumbnailPath = ToRel(ThumbnailPath);
-            v.BackgroundPath = ToRel(BackgroundPath);
+            // 画像は外部 (gameFolder 外) パスを null 化せず絶対のまま保持する。版切替でも消えず、保存時に
+            // GameImageSaveImporter が全版まとめて .toneprism へ取り込む (#386 指摘1: 非選択版の外部画像 silent loss 防止)。
+            v.ThumbnailPath = ToRelOrKeepExternal(ThumbnailPath);
+            v.BackgroundPath = ToRelOrKeepExternal(BackgroundPath);
             // 姓名どちらも空のカード (未入力で追加されただけ) は除外して保存。
             v.Developers = Developers
                 .Where(d => !d.IsBlank)
@@ -255,11 +258,20 @@ namespace TonePrism.Manager.Shell.GameForm
                 .ToList();
         }
 
-        // gameFolder 基準で相対化。gameFolder 外 / 空は null (= 外部画像取込は PR4 で対応、PR1 は null 格下げ)。
+        // gameFolder 基準で相対化。gameFolder 外 / 空は null (exe 用。外部 exe は保存時 step2 でブロック済)。
         private string ToRel(string abs)
         {
             if (string.IsNullOrWhiteSpace(abs)) return null;
             if (!PathConversionHelper.IsPathInside(GameFolder, abs)) return null;
+            return PathConversionHelper.ToRelativePath(GameFolder, abs.Trim());
+        }
+
+        // 画像用: gameFolder 内は相対化、外は絶対のまま保持 (保存時に全版を GameImageSaveImporter で .toneprism へ取り込む)。
+        // ToRel と違い外部を null 化しない = 版切替で非選択版の外部画像指定が silent に消えるのを防ぐ (#386 指摘1)。
+        private string ToRelOrKeepExternal(string abs)
+        {
+            if (string.IsNullOrWhiteSpace(abs)) return null;
+            if (!PathConversionHelper.IsPathInside(GameFolder, abs)) return abs.Trim();
             return PathConversionHelper.ToRelativePath(GameFolder, abs.Trim());
         }
 

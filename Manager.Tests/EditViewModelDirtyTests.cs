@@ -17,6 +17,7 @@ namespace TonePrism.Manager.Tests
     /// (c) が崩れると「未保存なのに無確認で破棄」= ガードが防ぎたい事故そのものになるため重点的に固める。
     /// VersionDeletionTests と同じ #239 方針 (PathManager 非依存の一時 DB)。
     /// </summary>
+    [Collection("PathManagerStatic")]   // (#386) 静的 PathManager base dir 共有のため直列化
     public class EditViewModelDirtyTests : IDisposable
     {
         private readonly string _root;   // EditViewModel ctor が PathManager.GetGameFolder を引くため一時 install dir を向ける。
@@ -92,6 +93,21 @@ namespace TonePrism.Manager.Tests
             Assert.True(vm.HasUnsavedChanges());
             vm.Title = "タイトル";
             Assert.False(vm.HasUnsavedChanges());
+        }
+
+        [Fact]
+        public void CommitToVersion_KeepsExternalImagePath_NotNulled()
+        {
+            // (#386 指摘1) 外部 (gameFolder 外) 画像パスは版へ commit しても null 化されず絶対のまま残る。これにより
+            // 版切替 (= 前版への commit) で非選択版の外部画像指定が silent に消えず、保存時に全版まとめて取り込める。
+            // 旧実装は ToRel が外部を null 化していた (= 切替で消失)。
+            var vm = new EditViewModel(_db, Seed("sigExt", "T", "D"));
+            string external = Path.Combine(Path.GetTempPath(), "outside_" + Guid.NewGuid().ToString("N") + ".png");
+            vm.ThumbnailPath = external;
+
+            vm.CommitToVersion(vm.SelectedVersion);
+
+            Assert.Equal(external, vm.SelectedVersion.ThumbnailPath);   // 保持 (旧実装は null だった)
         }
 
         [Fact]
