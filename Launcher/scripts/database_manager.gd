@@ -27,8 +27,14 @@ var db_path: String = ""
 #  → v15〜v23 は定数追従、v24 は実利用
 const CURRENT_DB_VERSION: int = 24
 
-## データベースを開く
-func open() -> bool:
+## データベースを開く。
+##
+## busy_timeout_ms: ロック競合時に待つ上限。既定 (10 秒) は「待ってでも確実に読む」用。
+##   **来場者を待たせる瞬間に呼ぶ場合は短くすること** — ゲーム終了直後のように画面が固まって
+##   見える局面で 10 秒待つくらいなら、既定値にフォールバックした方が体験を壊さない (レビュー M-3)。
+## check_version: 版数チェックと migration 案内を走らせるか。設定値を 1 つ読むだけの用途では不要な
+##   往復なので切れるようにしてある (SMB では 1 クエリ = 1 往復)。
+func open(busy_timeout_ms: int = 10000, check_version: bool = true) -> bool:
 	if db != null:
 		return true
 
@@ -54,13 +60,29 @@ func open() -> bool:
 
 	print("[DatabaseManager] データベースを開きました: ", db_path)
 
-	# SMB ネットワーク共有上での運用安全性のため DELETE モードを使用 (#103)
-	# busy_timeout で書き込み競合時の待機列を確保（10000ms）
-	db.query("PRAGMA journal_mode=DELETE;")
-	db.query("PRAGMA busy_timeout=10000;")
+	# **busy_timeout を先に張る**。journal_mode の変更はロックを要求するため、先に待機列を確保
+	# しておかないと、Manager がバックアップ等で DB を握っている瞬間にリトライ猶予ゼロで即失敗する。
+	db.query("PRAGMA busy_timeout=%d;" % busy_timeout_ms)
+
+	# SMB ネットワーク共有上での運用安全性のため DELETE モードを使用 (#103)。
+	#
+	# **戻り値の bool では判定できない** (レビュー M-1)。`PRAGMA journal_mode=X` は切り替えられなかった
+	# 場合でもエラーにならず、**現在のモードを結果行として返して成功する**。bool を見るだけだと
+	# 「DELETE に落ちていないのに OK と読む」silent pass になり、#103 の前提 (SMB 上で WAL を使わない)
+	# が静かに崩れる。結果行の journal_mode を実際に読んで照合する。
+	if db.query("PRAGMA journal_mode=DELETE;"):
+		var jres := db.get_query_result()
+		var mode := ""
+		if jres and jres.size() > 0:
+			mode = str(jres[0].get("journal_mode", "")).to_lower()
+		if mode != "delete":
+			LogBridge.warn("[DatabaseManager] journal_mode を DELETE にできませんでした (現在: %s)。他プロセスが DB を握っている可能性があります。SMB 上で WAL のまま運用すると共有越しの整合性が保証されません (#103)" % (mode if mode != "" else "不明"))
+	else:
+		LogBridge.warn("[DatabaseManager] PRAGMA journal_mode の実行自体に失敗しました。DB がロックされている可能性があります")
 
 	# データベースのバージョンチェックとマイグレーション
-	_check_and_migrate_db()
+	if check_version:
+		_check_and_migrate_db()
 
 	return true
 

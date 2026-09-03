@@ -80,8 +80,18 @@ func _initialize() -> void:
 	# 初回 heartbeat write
 	_write_session_json()
 
+	# **ポーズ中も動かす** (レビュー H-1)。Timer は既定 (PROCESS_MODE_INHERIT) だと
+	# `get_tree().paused` で止まるため、ダイアログ表示中は heartbeat が出なくなる。
+	# Manager 側の生存判定は 60 秒 (`LauncherSessionService.StaleTimeoutSeconds`) なのに対し、
+	# アンケートは無操作 90 秒 / 進捗なし 300 秒まで表示され続ける = **生きているキオスクが
+	# Manager のダッシュボードから消える**。当日スタッフが「落ちた台」を見に走ることになる。
+	# ポーズはあくまで画面の話で、プロセスは動いているのだから heartbeat は止めてはいけない。
+	process_mode = Node.PROCESS_MODE_ALWAYS
+
 	# Timer 起動 (10 秒周期、autostart、繰り返し)
 	_timer = Timer.new()
+	# 親が ALWAYS でも明示しておく (このノードだけ切り出されたときに静かに止まらないように)。
+	_timer.process_mode = Node.PROCESS_MODE_ALWAYS
 	_timer.wait_time = HEARTBEAT_INTERVAL_SECONDS
 	_timer.autostart = true
 	_timer.one_shot = false

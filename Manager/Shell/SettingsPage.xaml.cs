@@ -68,8 +68,15 @@ namespace TonePrism.Manager.Shell
                 LogPathBox.Text = (repo.GetString(SettingsKeys.LogsRootPath, "") ?? "").Trim();
                 LogRetentionBox.Value = Clamp(repo.GetInt32(SettingsKeys.LogRetentionDays, SettingsKeys.DefaultLogRetentionDays), 1, 3650);
                 BackupPathBox.Text = (repo.GetString("backup_destination_path", "") ?? "").Trim();
-                BackupAutoToggle.IsChecked = !string.Equals(repo.GetString(SettingsKeys.BackupAutoEnabled, "true"), "false", StringComparison.OrdinalIgnoreCase);
+                // 解釈は SettingsValueFormat に集約（旧実装の「"false" 以外はすべて ON」は "0" を ON と
+                // 読むため、Launcher の get_bool と食い違う。今は Launcher がこの key を読まないので実害は
+                // 無いが、同じファイル内に 2 通りの解釈を残さない / レビュー M-4）。
+                BackupAutoToggle.IsChecked = SettingsValueFormat.ParseBool(repo.GetString(SettingsKeys.BackupAutoEnabled, "true"), true);
                 BackupRetentionBox.Value = Clamp(repo.GetInt32("backup_retention_count", 30), 1, 999);
+                // (#35) アンケートのトグル。既定は ON = 新規インストールで何もしなくても収集が始まる
+                // (文化祭は 1 日勝負で、設定し忘れて 1 件も取れない方が損失が大きいため)。
+                SurveyGameEndToggle.IsChecked = SettingsValueFormat.ParseBool(repo.GetString(SettingsKeys.SurveyGameEndEnabled, "true"), true);
+                SurveyLauncherEndToggle.IsChecked = SettingsValueFormat.ParseBool(repo.GetString(SettingsKeys.SurveyLauncherEndEnabled, "true"), true);
                 // (レビュー #1) パスの直近保存値を記録 (以後この値と異なる時だけ書込/競合チェック)。
                 _lastSavedPaths[SettingsKeys.LogsRootPath] = LogPathBox.Text;
                 _lastSavedPaths["backup_destination_path"] = BackupPathBox.Text;
@@ -114,11 +121,32 @@ namespace TonePrism.Manager.Shell
         {
             if (_loading || Db == null) return;
             if (!AllowWrite("バックアップ設定の適用")) return;
-            try { Db.SettingsRepository.SetString(SettingsKeys.BackupAutoEnabled, BackupAutoToggle.IsChecked == true ? "true" : "false"); }
+            try { Db.SettingsRepository.SetString(SettingsKeys.BackupAutoEnabled, SettingsValueFormat.FormatBool(BackupAutoToggle.IsChecked == true)); }
             catch (Exception ex) { Logger.Warn("[SettingsPage] 自動バックアップ保存失敗: " + ex.Message); }
         }
 
         private void BackupRetention_LostFocus(object sender, RoutedEventArgs e) => FlushPendingInts();
+
+        // ---- アンケート (#35) ----
+        // 稼働中の Launcher が表示直前に毎回読むため、ここで書いた瞬間に全キオスクへ効く (再起動不要)。
+        // 自動バックアップのトグルと同じ即時保存パターン。
+        private void SurveyGameEnd_Changed(object sender, RoutedEventArgs e)
+            => SaveSurveyToggle(SettingsKeys.SurveyGameEndEnabled, SurveyGameEndToggle.IsChecked == true, "ゲーム終了時のアンケート");
+
+        private void SurveyLauncherEnd_Changed(object sender, RoutedEventArgs e)
+            => SaveSurveyToggle(SettingsKeys.SurveyLauncherEndEnabled, SurveyLauncherEndToggle.IsChecked == true, "退出時のアンケート");
+
+        private void SaveSurveyToggle(string key, bool enabled, string label)
+        {
+            if (_loading || Db == null) return;
+            if (!AllowWrite("アンケート設定の適用")) return;
+            try
+            {
+                Db.SettingsRepository.SetString(key, SettingsValueFormat.FormatBool(enabled));
+                Logger.Info("[SettingsPage] " + label + " を " + (enabled ? "表示する" : "表示しない") + " に変更しました");
+            }
+            catch (Exception ex) { Logger.Warn("[SettingsPage] " + label + " の保存失敗: " + ex.Message); }
+        }
 
         // ---- 共通 ----
         private bool Browse(Wpf.Ui.Controls.TextBox box)

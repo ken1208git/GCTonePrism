@@ -1126,7 +1126,8 @@ func _scroll_to_all_games_button() -> void:
 func _on_exit_button_pressed() -> void:
 	var callback = func(idx):
 		if idx == 1:
-			IdleManager.transition_to_screensaver(get_tree())
+			# (#35) 退出確認の後に全体アンケートを挟んでからスクリーンセーバーへ。
+			SurveyFlow.maybe_show_launcher_end(func(): IdleManager.transition_to_screensaver(get_tree()))
 	DialogManager.show_message("確認", "退出しますか？\nタイトル画面に戻ります。",
 		["キャンセル", "退出する"], callback,
 		[Color(0.3, 0.3, 0.3), Color(0.8, 0.2, 0.2)])

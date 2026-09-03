@@ -668,8 +668,21 @@ func _on_session_exited() -> void:
 	# サービスモードの裏で勝手に画面が動いて壊れる。退出フラグ (退出メニュー由来) もテスト中は無視。
 	if ServiceMode.is_open():
 		return
+	# (#35 / レビュー M-2) **試遊かどうかはここで同期に読む**。`ServiceMode.is_open()` だけでは足りない —
+	# 試遊中に 60 秒のオートクローズでサービスモードが先に閉じうるので (`play_record_writer.gd` が
+	# 「終了時の is_open 判定は使ってはいけない」と規約化しているのと同じ理由)、閉じた後にスタッフが
+	# 退出するとスタッフの回答が本物のアンケートとして保存されてしまう。
+	# `game_session.gd` は `test_session = false` を emit の**後**に実行するので、同期購読者である
+	# 本関数からはまだ読める (deferred にすると常に false になる)。
+	var is_test := GameSession.test_session
 	if GameSession.should_exit_to_screensaver():
-		IdleManager.transition_to_screensaver(get_tree())
+		if is_test:
+			# 試遊はプレイ記録と同じく集計に混ぜない (#311)。アンケートを挟まずそのまま戻す。
+			IdleManager.transition_to_screensaver(get_tree())
+			return
+		# (#35) 退出は「席を離れる」意図なので全体アンケートを挟む。ここに来るのは PLAYING 前に
+		# ゲームが落ちた場合なので、ゲーム個別アンケートは出さない (遊べていない人に感想を聞かない)。
+		SurveyFlow.maybe_show_launcher_end(func(): IdleManager.transition_to_screensaver(get_tree()))
 		return
 	if _launching_overlay:
 		_launching_overlay.hide_overlay()
@@ -796,13 +809,21 @@ func _go_back() -> void:
 		TransitionManager.change_scene(scene)
 		AppState.clear()
 	else:
-		IdleManager.transition_to_screensaver(get_tree())
+		# 戻り先が無い = ここが最上位で、この「戻る」は展示からの退出そのもの
+		# (通常はストアへ戻る経路だが、戻り先を見失った場合の受け皿としてこの分岐がある)。
+		# 退出はすべて全体アンケートを挟む — この 1 本だけ素通りだと、経路によって
+		# 集まったり集まらなかったりして集計が偏る。
+		# 状態の後始末も退出ボタン経由 (`_on_exit_button_pressed`) と揃える — 経路によって
+		# フィルタ結果が次の来場者に残ったり残らなかったりするのは追いにくい (レビュー L-3)。
+		AppState.clear()
+		SurveyFlow.maybe_show_launcher_end(func(): IdleManager.transition_to_screensaver(get_tree()))
 
 func _on_exit_button_pressed() -> void:
 	var callback = func(idx):
 		if idx == 1:
 			AppState.clear()
-			IdleManager.transition_to_screensaver(get_tree())
+			# (#35) 退出確認の後に全体アンケートを挟んでからスクリーンセーバーへ。
+			SurveyFlow.maybe_show_launcher_end(func(): IdleManager.transition_to_screensaver(get_tree()))
 	DialogManager.show_message("確認", "退出しますか？\nタイトル画面に戻ります。",
 		["キャンセル", "退出する"], callback,
 		[Color(0.3, 0.3, 0.3), Color(0.8, 0.2, 0.2)])
