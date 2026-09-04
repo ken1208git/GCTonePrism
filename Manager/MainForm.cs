@@ -1351,7 +1351,12 @@ namespace TonePrism.Manager
                 // 申し送りの方を残す案は採らない — 手動で Install.bat から復旧しても結果ファイルは
                 // 生まれないため、直したのに永久に警告が出続けることになる。状態の置き場所を
                 // .update_result 1 つに保てば、版数が追いついた時点で自動失効するので手動復旧でも解消する。
-                if (runResult == null)
+                //
+                // **期待版数が無いときは記録しない。** 記録に目標版数を入れられないと自動失効の
+                // 手掛かりが無くなり、手動で Install.bat から復旧しても警告が残り続ける。
+                // しかもその場合の失敗判定はログ推測 (末尾 20 行の [ERROR]) 由来で当てにならない。
+                // 当てにならない根拠で消せない記録を残すくらいなら、記録しない方が正しい。
+                if (runResult == null && !string.IsNullOrEmpty(expectedManagerVersion))
                 {
                     Services.UpdaterClient.RecordFailureWithoutUpdaterResult(expectedManagerVersion);
                 }
