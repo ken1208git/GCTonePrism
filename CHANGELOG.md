@@ -13,6 +13,23 @@
 
 リリース zip 全体に付与する独立バージョン。GitHub Releases の本文として `Release.ps1` がこのセクションを抜き出して使う。エンドユーザー（来場スタッフ / 顧問の先生 / 部員）向けの **summary** を書く。技術詳細は `## Launcher` / `## Manager` / `## Release Tooling` 等の別セクションを参照。詳細仕様は [SPECIFICATION.md §3.7.7](SPECIFICATION.md) を参照。
 
+### [Bundle v0.11.2] - 2026-09-04
+
+**v0.11.1 のアップデートが本番で失敗したため、その原因を直した追加パッチです。**「管理ソフトを 2 つ開いていると更新が失敗する」問題を塞ぎました。
+
+- **2 つ目の管理ソフトが更新を邪魔していました（#444）**: 管理ソフトを 2 つ起動すると「Manager は 1 つだけ起動できます」という小窓が出ますが、**この小窓は OK を押すまで閉じず、その間そのプログラムはファイルを掴んだままです**。本番ではこの小窓が他のウィンドウの裏に隠れたまま **2 分 42 秒**生き残り、更新プログラムがフォルダを入れかえようとした瞬間に「アクセスが拒否されました」で失敗していました。
+- **更新プログラムが、同じ場所から起動している管理ソフトを全部待つようにしました（#444）**: 従来は「更新を始めた 1 つ」だけを待っていました。他の場所にインストールされた管理ソフトを巻き込まないための設計でしたが、**同じ場所の 2 つ目まで見逃す**必要はありませんでした。
+- **更新を始める前に「他に管理ソフトが開いています」と知らせるようにしました（#444）**: 従来のチェックは来場者の画面（Launcher）と補助プログラムしか見ておらず、管理ソフト自身は対象外でした。
+
+**アップデート方法**: Manager の「アップデート」タブから適用。**DB スキーマの変更はありません**（v24 のまま）。
+
+- Launcher: v0.15.0（変更なし）
+- Manager: v0.34.1 → v0.34.2（更新前チェックに他の管理ソフトを追加）
+- Updater: v0.2.2 → v0.2.3（同じ場所の管理ソフトを全部待つ）
+- LauncherAgent: v0.3.0（変更なし）
+
+**Notes**: bugfix のみのため Bundle patch bump（v0.11.1 → v0.11.2）。
+
 ### [Bundle v0.11.1] - 2026-09-04
 
 **管理ソフトの「アップデート」タブからの更新が、v0.9.0 以降ずっと壊れていた**のを修正した緊急リリースです。更新しても**管理ソフトだけが古いまま残り**、しかも画面には「✓ アップデート完了」「最新版を実行中です」と表示されるため、**更新の失敗が 2 リリース分そのまま見過ごされていました**。
@@ -1408,6 +1425,13 @@ Release.bat の編集は **UTF-8 (no BOM) + CRLF** 厳守 (SPEC §3.7.9.1 参照
 
 SPEC §2.4 で定義される「主要 (Launcher / Manager / Monitor) を補助する独立 exe 群」の **runtime exe** の変更履歴。`Companions/Updater/TonePrism_Updater.exe` (Manager 自身の dir 置換用) + `LauncherAgent` (#30/#101/#216、probe/sensor/focus を統合した Launcher 補助の常駐エージェント、旧 WindowProbe を吸収) の deployment 配置と整合。本 section は **#160 で `## Updater (Companions/Updater)` から rename + 一般化**、`## Release Tooling` (= build / 配布スクリプト) と責務分離 (= 後者は build 時のみ動く scripts、本 section は runtime exe)。SPEC §2.4 / §3.7.4 参照。
 
+### [Updater v0.2.3] - 2026-09-04
+
+- **`--caller-pid` 指定時も、同じ install から起動している Manager プロセスを全部待つ (#444)**。従来は caller の 1 PID だけを待機対象にしていた。これは round 2 P1 #1 で **他 install の Manager を巻き添えにしない**ために入れた設計だが、「**同一 install の別プロセスを無視してよい**」という意味ではなかった。exe path 一致で絞れば巻き添えリスクを増やさずにこの穴だけ塞げる。
+- 本番事故（2026-09-04、v0.11.1 の適用失敗）: 同 PC で 2 つ目の Manager が「1 つだけ起動できます」の modal を出したまま 2 分 42 秒生存し、caller だけを待った Updater が `Manager` → `Manager.bak` の rename でアクセス拒否になった。**同じ共有フォルダ上の Launcher / LauncherAgent / Companions/Updater / bat の置換はすべて成功しており**、権限や SMB の問題ではなく「そのフォルダだけ生きたプロセスが掴んでいた」ことが切り分けられた。
+- 実装: `GetTargetProcesses` を「caller PID + 同一 install の他 Manager」の和集合に変更し、1 プロセス分の判定を `IsSameInstallManager` に抽出。ProcessName 一致 / MainModule path 一致 / 「識別できない」を「終了済み」と読まない（#440）の各規約はそのまま適用される。他 Manager 側のログは待機ログと同じ間引き（`verboseLog`）に載せてログ肥大を避ける。
+- bump 判断: bugfix のみ。**patch（v0.2.2 → v0.2.3）**。Manager v0.34.2 と同 PR。
+
 ### [Updater v0.2.2] - 2026-09-04
 
 #### Fixed — アプリ内アップデートで Manager だけ更新されない不具合（`fix/updater-64bit`、#440）
@@ -2518,6 +2542,12 @@ PR #150 で dir rename (`GCTonePrism_Launcher/` → `Launcher/`) に連動して
 ---
 
 ## Manager（管理ソフト）
+
+### [Manager v0.34.2] - 2026-09-04
+
+- **更新前の起動中プロセスチェックに「自分以外の Manager」を追加 (#444)**。従来は Launcher と Companions しか見ておらず（`ProcessTerminator.EnumerateRunning`）、**同じ PC で 2 つ目の Manager が開いていても素通り**していた。2 つ目は単一起動チェックで modal を出すが、**その modal は OK を押すまで閉じず、その間 `Manager/` 配下の exe / dll を掴み続ける**。本番ではこれが 2 分 42 秒生き残り、Updater の `Manager` → `Manager.bak` rename がアクセス拒否になった（2026-09-04、v0.11.1 の適用失敗）。
+- 別 install の Manager は対象外（置換されるのは自分の install の dir だけ）。ただし **path を読めなかった場合は「同じ install かもしれない」側に倒して数える** — 見逃すと上記の事故に直結するので、余分に警告する方が安全側。
+- bump 判断: bugfix のみ。**patch（v0.34.1 → v0.34.2）**。Updater v0.2.3 と同 PR。
 
 ### [Manager v0.34.1] - 2026-09-04
 
@@ -5200,6 +5230,7 @@ Release.ps1 の $FooterSentinel 定数も同期更新すること。
 
 <!-- GCTONEPRISM-CHANGELOG-FOOTER-BEGIN-V1 -->
 
+[Bundle v0.11.2]: https://github.com/ken1208git/TonePrism/releases/tag/v0.11.2
 [Bundle v0.11.1]: https://github.com/ken1208git/TonePrism/releases/tag/v0.11.1
 [Bundle v0.11.0]: https://github.com/ken1208git/TonePrism/releases/tag/v0.11.0
 [Bundle v0.10.0]: https://github.com/ken1208git/TonePrism/releases/tag/v0.10.0

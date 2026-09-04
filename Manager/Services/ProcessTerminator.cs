@@ -39,6 +39,9 @@ namespace TonePrism.Manager.Services
             // Launcher
             AppendIfRunning(list, LauncherProcessName, "Launcher");
 
+            // 自分以外の Manager (2026-09-04 の本番事故)
+            AppendOtherManagers(list);
+
             // Companions (Updater 以外)
             if (Directory.Exists(PathManager.CompanionsDir))
             {
@@ -52,6 +55,82 @@ namespace TonePrism.Manager.Services
                 }
             }
             return list;
+        }
+
+        /// <summary>
+        /// **自分以外の Manager プロセス**を検出する (2026-09-04 の本番事故)。
+        ///
+        /// 2 個目の Manager を起動すると、単一起動チェックに引っかかって
+        /// 「Manager は 1 つだけ起動できます」の modal が出る。**この modal は OK を押すまで閉じず、
+        /// その間そのプロセスは生きたまま `Manager/` 配下の exe / dll を掴み続ける。**
+        /// 本番ではこの 2 個目が裏に隠れたまま 2 分 42 秒生き残り、Updater の
+        /// `Manager` → `Manager.bak` rename がアクセス拒否になって更新が失敗した。
+        ///
+        /// Updater 側でも同じ install の Manager を全部待つように直したが (ProcessWaiter)、
+        /// **更新を始める前に気付いて閉じてもらう方が早い**ので両方で塞ぐ。
+        ///
+        /// 別 install の Manager は対象外 (置換されるのは自分の install の dir だけ)。
+        /// ただし path を読めなかった場合は「同じ install かもしれない」側に倒して数える —
+        /// 見逃すと上記の事故に直結するため、余分に警告する方が安全側。
+        /// </summary>
+        private static void AppendOtherManagers(List<RunningProcessInfo> list)
+        {
+            const string managerProcessName = "TonePrism_Manager";
+            int count = 0;
+            try
+            {
+                int selfPid;
+                string selfExe = null;
+                using (Process self = Process.GetCurrentProcess())
+                {
+                    selfPid = self.Id;
+                    try { selfExe = self.MainModule != null ? self.MainModule.FileName : null; }
+                    catch { selfExe = null; }
+                }
+
+                foreach (Process p in Process.GetProcessesByName(managerProcessName))
+                {
+                    try
+                    {
+                        if (p.Id == selfPid) continue;
+                        if (!string.IsNullOrEmpty(selfExe))
+                        {
+                            string path = null;
+                            try { path = p.MainModule != null ? p.MainModule.FileName : null; }
+                            catch { path = null; }
+                            if (path != null && !string.Equals(path, selfExe, StringComparison.OrdinalIgnoreCase))
+                            {
+                                continue;  // 別 install
+                            }
+                        }
+                        count++;
+                    }
+                    catch (Exception)
+                    {
+                        // 列挙中に exit した等。数えないだけで続行。
+                    }
+                    finally
+                    {
+                        try { p.Dispose(); } catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[ProcessTerminator] 他の Manager プロセスの列挙に失敗 (チェックを skip): " + ex.Message);
+                return;
+            }
+
+            if (count > 0)
+            {
+                list.Add(new RunningProcessInfo
+                {
+                    ProcessName = managerProcessName,
+                    DisplayLabel = "Manager (この PC で開いている別のウィンドウ。"
+                        + "「1 つだけ起動できます」の小窓が裏に隠れていないか確認してください)",
+                    InstanceCount = count,
+                });
+            }
         }
 
         private static void AppendIfRunning(List<RunningProcessInfo> list, string processName, string displayLabel)
