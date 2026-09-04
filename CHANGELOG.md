@@ -2559,6 +2559,13 @@ PR #150 で dir rename (`GCTonePrism_Launcher/` → `Launcher/`) に連動して
   - 起動失敗フォールバック (`FallbackToVisibleMainForm`) は `this` のままで正しい — スプラッシュを閉じ `Opacity = 1` + `Show()` してから出しており、契約を満たしている。
 - **維持すべき不変条件**: 起動経路のモーダルに渡す owner は**「可視の窓」か `null` のどちらかだけ**。不可視の窓は渡さない。
 - 通知マーカー (`update_notified_tag`) は MessageBox が正常に閉じたときだけ記録されるため、**タスクマネージャーで kill しても逃げられず次回起動でも同じ場所で止まる**という性質があった。本修正でその入口ごと塞がる。
+- **レビュー対応 (H-2 / M-6): `null` を「owner なし」と思い込んでいたのを訂正**。WinForms の `MessageBox.Show` は owner が `null` のとき**呼び出しスレッドの `GetActiveWindow()` を owner に代入する**ため、`null` を渡しても不可視の MainForm が owner に戻りうる。特に同時起動の競合ダイアログは MainForm の Show 完了後に走る設計なので、`null` 化だけでは**修正が no-op になりうる**状態だった。当該ゲートは `MakeMainFormVisible()` で**可視 owner を作ってから**出すよう変更。
+- **レビュー対応 (M-6): 機序の説明を訂正**。「透明 / 非表示の窓を owner にすると所有ダイアログがタスクバーに出ない」は誤り。所有ダイアログが自前のタスクバーボタンを持たないのは **owned であること自体**が理由で、**決定的なのは owner 自身がタスクバーに出ているか**。#449 の実害は「透明だから」ではなく「**`MainForm_Load` が return する前＝一度も表示されていない窓**を owner にしたから」。この誤解のまま規約化すると、将来「可視だが `ShowInTaskbar=false` の窓」で同じ穴が開く。
+- **レビュー対応 (H-1): 起動後の経路にも同じ穴が空いていた**のを修正。シェル表示後は MainForm が `Hide()` 済みなので、`CheckSessionConflictBeforeWrite`（編集操作前の競合警告）/ 他 PC 復元中の警告 / バックアップ中の終了確認の 3 箇所が**恒久的に契約違反**だった。しかも `ShellOwner` の docstring が「隠し MainForm を owner にすると可視シェルが無効化されず擬似モーダルになる」とこの経路を名指しで否定していた ―― **「データが破損する恐れ」の警告中にシェルを操作できる再入**が起きる。起動時ゲートより発火頻度が高い（別 Manager 稼働中なら書込操作のたび）。
+- **レビュー対応 (M-3): 死んだシェルを owner に返しうる**のを修正。`ShellWindow.Instance` は ctor で代入され `Closed` でしか消えないため、`Show()` が HWND 生成後に失敗すると「表示されていないシェル」が残る。`IsVisible` チェックの追加と、生成失敗時の `Instance = null` 掃除で二重に閉じた。
+- **レビュー対応 (M-4)**: 新メソッドを既存 docstring と既存メソッドの間に挿入してしまい、`ShowUpdateAvailableNotification` の**戻り値契約（`MarkNotified` を呼ぶか決める重要仕様）が別メソッドに付いていた**のを是正。
+- **レビュー対応 (M-5)**: `#186 round 3` の「MainForm を owner にすれば taskbar entry あり」というコメントが #245 で失効していたのに残置され、新しい規約と正面から矛盾していたのを上書き。
+- **レビュー対応 (L-7)**: ヘルパー名を `StartupDialogOwner` → `VisibleModalOwner` に変更（起動限定ではなく全経路で使うため）。
 - bump 判断: bugfix のみ。**patch（v0.34.2 → v0.34.3）**。
 
 ### [Manager v0.34.2] - 2026-09-04
