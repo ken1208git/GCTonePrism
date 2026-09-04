@@ -132,7 +132,7 @@ namespace TonePrism.Updater
                 // Logger.Shutdown より前に呼ぶ (書き出し結果自体もログに残したいため)。
                 //
                 // **書き出せない経路が 3 つある**: `--help` (exit 0) / 引数 parse 失敗 (exit 2) /
-                // parse 中の예 예外 (exit 1)。いずれも本 try より前に return しており、そもそも
+                // parse 中の予期しない例外 (exit 1)。いずれも本 try より前に return しており、そもそも
                 // `--manager-target` が読めていないので**書き込み先が決まらない**。
                 // ただしその 3 つは Manager 側が渡す引数の不具合であり、かつ Manager dir は一切
                 // 触られていないため、起動側の版数比較 (期待版数 != 実行中版数) が失敗を捉える
@@ -180,9 +180,13 @@ namespace TonePrism.Updater
                 case WaitResult.UnidentifiableTimeout:
                     // (#440) 生きているが同一性を確認できない Manager。「終了済みと誤判定して置換に進む」
                     // (静かなデータ不整合) と「永久に待つ」(管理ソフトが消えたまま戻らない) の両方を避け、
-                    // Manager dir に触らずに降りる。exit 3 = user 介入経路 (手動 close 後に再試行) に倒す。
+                    // Manager dir に触らずに降りる。
+                    //
+                    // **exit 3 は使わない。** 3 の推奨アクションは「強制終了して再試行」だが、この経路は
+                    // 同一性を確認できないプロセスを kill しない方針なので、強制終了で再試行しても同じ
+                    // ところに戻る行き止まりループになる。専用の exit 9 (手動で閉じてから再試行) に分ける。
                     Logger.Error("Manager プロセスの同一性を確認できませんでした。データを壊さないため置換を中止します。管理ソフトを手動で閉じてから、もう一度お試しください。");
-                    return 3;
+                    return 9;
                 case WaitResult.EnumerationFailed:
                     Logger.Error("process enumeration が連続失敗で abort。IPC/WMI 一時不調の可能性、短時間後の再試行で回復するケースあり。");
                     return 8;
@@ -310,6 +314,19 @@ namespace TonePrism.Updater
             //       (直接 spawn でも Manager.exe が requireAdministrator の場合 OS 既定の UAC prompt が
             //        出る仕組みは同じ、Manager は非 admin 前提も同じく維持)
             //     - Updater 完了が ~1.5 秒遅くなる (2000ms 待機)、ユーザー体験への影響は無視できる
+            // (#440 レビュー High-1) **新 Manager を起動する前に結果を確定させる。**
+            //
+            // 旧実装は Main の finally でしか書いていなかった。ところが finally が走るのは
+            // Step 3 (spawn + 2 秒の early-crash 待ち) と Step 4 (.bak 削除) の**後**で、
+            // 新 Manager は起動直後 (MainForm_Load のほぼ冒頭) に結果を読む。つまり速い PC では
+            // **成功した更新なのに「結果ファイルが無い」と読まれ、「✗ アップデート未完了」を出す**。
+            // 直そうとしているバグの符号が反転しただけの同型バグになる。
+            //
+            // ここまで来れば「置換は完了し、入っている版数も照合済み」= 成功は確定しているので、
+            // 読み手が現れる前に書いてしまう。Step 3/4 で失敗したら finally が正しい終了コードで
+            // 上書きする (成功のときだけ二重書き込みを抑止する)。
+            UpdateResult.Write(args.ManagerTargetDir, args.StagingDir, 0);
+
             Logger.Info("[Step 3/4] 新 Manager.exe を起動");
             try
             {

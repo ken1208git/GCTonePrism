@@ -36,6 +36,14 @@ namespace TonePrism.Updater
         internal const string FileName = ".update_result";
 
         /// <summary>
+        /// 既に書き出したか。**成功を spawn 前に書いてから、`finally` が同じ値で上書きするのを防ぐ**ため。
+        /// 新 Manager が読んで削除した後に `finally` が書き直すと、平常時にファイルが残ってしまう。
+        /// 失敗 (exitCode != 0) のときは上書きする — spawn 前に成功を書いた後で Step 3/4 が失敗する
+        /// 経路があり、そこでは最終的な終了コードが正しい。
+        /// </summary>
+        private static bool _written;
+
+        /// <summary>
         /// 結果を書き出す。**書き込み失敗は握り潰す** — ここで落とすとアップデート自体の成否が
         /// 変わってしまう。読めなければ消費側が従来のログ推測にフォールバックする。
         /// </summary>
@@ -44,6 +52,8 @@ namespace TonePrism.Updater
         /// <param name="exitCode">Updater の終了コード (0 = 成功)</param>
         internal static void Write(string managerTargetDir, string stagingDir, int exitCode)
         {
+            // 成功を既に書いてあるなら書き直さない (上記 _written のコメント参照)。
+            if (_written && exitCode == 0) return;
             try
             {
                 if (string.IsNullOrEmpty(managerTargetDir)) return;
@@ -64,6 +74,7 @@ namespace TonePrism.Updater
 
                 string path = Path.Combine(installRoot, FileName);
                 File.WriteAllText(path, json, new System.Text.UTF8Encoding(false));
+                _written = true;
                 Logger.Info($"実行結果を書き出しました: {path} (exit={exitCode})");
             }
             catch (Exception ex)

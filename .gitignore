@@ -72,3 +72,8 @@ tools/nuget-*.exe
 
 # MkDocs のビルド出力 (docs サイト、CI で生成するためコミット不要)
 site/
+
+# (#440) アップデートの受け渡しに使う一時ファイル。dev 起動では PathManager.BaseDirectory が
+# リポジトリルートに解決されうるため、repo 直下に書かれることがある。
+.update_completed
+.update_result

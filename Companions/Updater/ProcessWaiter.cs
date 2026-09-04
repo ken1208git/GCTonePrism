@@ -263,9 +263,14 @@ namespace TonePrism.Updater
         ///      → ProcessName 一致で誤認 → `--force-kill` 指定時に E:\ 側を kill する silent danger。
         ///      `MainModule.FileName` を `expectedExePath` (Program.cs が `--restart-exe` を渡す) と比較して
         ///      install path 単位で識別を強化。`expectedExePath` が null/empty なら本検証は skip (後方互換)。
-        ///      access denied / process exit 等で取得不能なら「安全側で Manager 既終了扱い」(空配列)。
-        ///   いずれの検証で不一致でも「Manager 既終了 + PID 再利用」とみなして空配列扱い (= 待機 skip 経路)、
-        ///   force-kill 対象から外す。
+        ///      **path が不一致**なら別 install / session なので空配列 (既終了扱い)。
+        ///      **読み取り不能** (Win32Exception = access denied / 32-64bit 差) は空配列にしない (#440)。
+        ///      「識別できない」を「終了済み」と読むと、起動中の Manager dir を置換しに行って静かな
+        ///      データ不整合を作る (= #440 の根本原因そのもの)。待機を継続しつつ `unidentified` を立てて
+        ///      caller に伝え、caller が UnidentifiedCapSeconds で打ち切る。**識別できていないので
+        ///      kill 対象には入れない** (別 install を巻き添えにしないため)。
+        ///   ProcessName 不一致 / path 不一致は「Manager 既終了 + PID 再利用」とみなして空配列扱い
+        ///   (= 待機 skip 経路)、force-kill 対象からも外す。
         /// </summary>
         private static Process[] GetTargetProcesses(int callerPid, string expectedExePath, bool verboseLog, out bool unidentified)
         {

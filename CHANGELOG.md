@@ -273,6 +273,13 @@
 
 **注意 (#160 で section 責務分離)**: `Updater` 等の **runtime exe 群** (= SPEC §2.4 Companions 配置) の changelog は本 section ではなく **`## Companions`** (旧 `## Updater (Companions/Updater)`、本 PR で section 名を一般化) に記載する。本 section は build / 配布スクリプトのみ対象。Bundle v0.4.0 以前 (= 本 PR merge 前) の Updater 変更履歴は `## Release Tooling` の過去 entry (= round 1〜8 review 詳細等) に retain、retroactive consolidation は scope creep のため見送り (= PR #159 round 4 「SPEC 1 PR 1 bump 規約」導入時と同 pattern)。
 
+### 2026-09-04 — Updater の bitness をリリース前に検証（`fix/updater-64bit`、#440）
+
+- `Build-Updater` の msbuild 直後に **`Assert-UpdaterBitness`** を追加。Updater が 32bit として焼かれていたら **公開前に hard fail** する。
+- **なぜ機械強制が要るか**: csproj に `<Prefer32Bit>false</Prefer32Bit>` と書いてあっても、Visual Studio が per-configuration の `PropertyGroup` に `true` を書き戻すと**後勝ちで無言に revert** する。SPEC §3.7.6.1 に「必須」と書くだけでは守られず、実際この不具合（32bit の Updater が 64bit Manager を識別できない）は **2 リリース気付かれなかった**。`Assert-PublishedManagerVersion` / `Assert-ExportedLauncherVersion` と同じ「stamp 不発を公開前に落とす」系列に揃える。
+- **判定に PE ヘッダの machine は使えない**（AnyCPU は常に I386/PE32）。`Assembly.GetPEKind` の COR フラグを見て、`Preferred32Bit` / `Required32Bit` が付いていたら Fail する。`ReflectionOnlyLoadFrom` なのでコードは実行しない。
+- 詳細な背景は `## Companions` の Updater v0.2.2 エントリを参照。
+
 ### [Release Tooling v0.1.28] - 2026-06-14
 
 #### Removed (#245 / #377 後の掃除)
@@ -2500,7 +2507,7 @@ PR #150 で dir rename (`GCTonePrism_Launcher/` → `Launcher/`) に連動して
 - **`.update_result` は成功なら読んだ時点で消し、失敗のときだけ残します**（＝**平常時は存在しません**）。成功はもう覚えておく必要がありませんが、失敗は「アップデートタブの再試行ボタンを有効に戻す」ために後で（別セッションでも）参照する必要があるためです。残った失敗の記録は、**実行中の Manager が記録された目標版数に達していれば自動的に失効**します（手動で `Install.bat` を実行して直した場合も勝手に解消する＝時間ではなく事実で失効させる）。次の更新試行でも上書きされるので、いずれにせよ溜まりません。
 - **成否の判定は「版数の不一致」と「Updater の終了コード」の OR** にしました。版数比較だけだと、Manager の版数が変わらない Bundle リリース（Launcher だけ上げた等）で置換に失敗しても `expected == running` になって成功扱いになります。「一致しなければ失敗」は正しいのですが、その逆（一致すれば成功）は成り立ちません。版数の比較は **3-part** で行います（`running` は AssemblyVersion、`expected` は apphost の FileVersion と **SoT が違い**、リリースゲートも 3-part までしか一致を強制していないため。4-part で比べると revision だけ drift した場合に全ユーザーが偽の「✗ 未完了」を食らいます）。
 - **失敗ダイアログの版数行は不一致のときだけ出します**。終了コードだけで失敗した経路では両者が同値になり、「v0.34.1.0 / 本来は v0.34.1.0」という不可解な表示になるためです。
-- **リリース時に Updater の bitness を機械強制するようにしました**（`Release.ps1` の `Assert-UpdaterBitness`）。csproj に `Prefer32Bit=false` があっても、Visual Studio が per-configuration の PropertyGroup に `true` を書き戻すと**後勝ちで無言に revert**します。SPEC に「必須」と書くだけでは守られない（実際 2 リリース気付かれなかった）ので、他の版数 stamp 系と同じく公開前に hard fail させます。判定は PE ヘッダの machine ではできない（AnyCPU は常に I386/PE32）ため `Assembly.GetPEKind` の COR フラグを見ます。
+- **リリース時に Updater の bitness を機械強制するようにしました**（`Release.ps1` の `Assert-UpdaterBitness`）。詳細は `## Release Tooling` の該当エントリを参照。
 - **`docs/usage/manager.md` のアップデート手順も更新**しました。「✓ アップデート完了 のお知らせが出ます」と 1 種類しか書いていなかったところに、「✗ アップデート未完了」とその場合の動線（もう一度試す → 駄目なら開発者へ）を追記しています。
 - **再起動予告のダイアログも「完了のお知らせが表示されます」と約束しないようにしました**。そこで完了しているのはダウンロードと展開までで、Manager の置換はその後に Updater がやります。約束すると「**引き渡した時点を完了と呼ぶ**」という今回の間違いを別の場所でもう一度することになるため、「アップデートの結果をお知らせします」に改めました。なお他の成功メッセージ（バックアップ / 復元 / DB リセット）は結果オブジェクトの成否を見てから出しており、同種の問題はありません（確認済み）。
 - **失敗後に「今すぐアップデート」が押せなくなる問題も同時に修正**しました。現在の Bundle 版数は `CHANGELOG.md` から読みますが、その CHANGELOG は Updater の spawn 成功後に置換されるため、置換に失敗すると **CHANGELOG だけ新しくなって「最新版を実行中」＝ボタン無効**になり、**UI から再試行する手段が無くなります**（実際に v0.10.0 / v0.11.0 でこの状態になりました）。Updater の終了コードは失敗を正しく記録しているので、それを見て判定を覆し、「前回のアップデートが完了していません。もう一度お試しください。」と表示してボタンを有効に戻します。既に最新なら再適用しても同じ内容が入るだけなので、再試行を許す方が安全側です。

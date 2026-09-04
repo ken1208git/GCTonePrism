@@ -45,8 +45,14 @@ namespace TonePrism.Manager.Controls
             UpdateCheckResult cached = _updateChecker.LoadCacheOnly();
             ApplyResult(cached);
 
-            // 「前回アップデート結果」バナーがあれば表示
-            int? lastExit = UpdaterClient.TryLoadLastExitCode();
+            // 「前回アップデート結果」バナーがあれば表示。
+            // (#440 レビュー Low) ここも一次情報は Updater の実行結果。ログ推測は 2 分窓しか遡れず、
+            // 失敗の翌朝に起動すると「ステータス行は未完了と言うのにバナーは何も出ない」という
+            // 同一画面内で情報源が割れた状態になる。
+            var lastRun = UpdaterClient.TryLoadUpdateResult();
+            int? lastExit = (lastRun != null && lastRun.ExitCode.HasValue)
+                ? lastRun.ExitCode
+                : UpdaterClient.TryLoadLastExitCode();
             if (lastExit.HasValue)
             {
                 ShowPreviousUpdateBanner(lastExit.Value);
@@ -334,10 +340,18 @@ namespace TonePrism.Manager.Controls
         private bool IsPreviousUpdateFailed()
         {
             if (_previousUpdateFailed.HasValue) return _previousUpdateFailed.Value;
-            // 一次情報は Updater が書き残した実行結果。実行中の Manager が目標版数に達していれば
-            // その失敗は解消済みなので、HasUnresolvedFailure が記録ごと失効させる。
-            bool failed = UpdaterClient.HasUnresolvedFailure();
-            if (!failed && UpdaterClient.TryLoadUpdateResult() == null)
+            // **結果ファイルの有無を先に見る (レビュー High-2)。** `HasUnresolvedFailure` は成功 /
+            // 読取不能 / 解消済みのどの経路でもファイルを削除するので、その後に不在を見ても
+            // 「新 Updater が結果を残した」と「旧 Updater だった」を区別できない。順序が逆だと、
+            // 更新成功の直後に旧ログ推測へ落ち、Step 4 の best-effort な .bak 削除失敗 (Logger.Error) を
+            // 拾って「前回のアップデートが完了していません」を出す — 数秒前に「✓ 完了」を出した同じ画面で。
+            bool failed;
+            if (UpdaterClient.TryLoadUpdateResult() != null)
+            {
+                // 実行中の Manager が目標版数に達していれば失敗は解消済みなので、記録ごと失効させる。
+                failed = UpdaterClient.HasUnresolvedFailure();
+            }
+            else
             {
                 // 結果ファイルが無い = 旧 Updater。従来のログ推測にフォールバックする。
                 int? exitCode = UpdaterClient.TryLoadLastExitCode();

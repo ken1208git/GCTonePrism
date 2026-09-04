@@ -311,7 +311,10 @@ namespace TonePrism.Manager.Services
             if (running != null
                 && !string.IsNullOrEmpty(result.TargetManagerVersion)
                 && Version.TryParse(result.TargetManagerVersion, out target)
-                && running >= target)
+                // **3-part で比べる。** running は AssemblyVersion、target は apphost の FileVersion で
+                // SoT が違い、リリースゲートも 3-part までしか一致を強制しない。4-part だと revision の
+                // drift で失効条件を満たせず、失敗記録が永久に残る (MainForm 側と粒度を揃える)。
+                && CompareThreePart(running, target) >= 0)
             {
                 Logger.Info("[UpdaterClient] 前回の失敗記録は解消済みのため削除します (実行中 v"
                     + running + " >= 目標 v" + target + ")");
@@ -329,6 +332,20 @@ namespace TonePrism.Manager.Services
         /// 失敗に倒れる。「どの実行の話か」が分からないため直近 2 分のログしか見ない。
         /// 新しい判定はすべて <see cref="TryLoadUpdateResult"/> を一次情報にすること (#440)。
         /// </summary>
+        /// <summary>
+        /// 版数を 3-part (major.minor.build) で比較する。revision は無視する。
+        /// AssemblyVersion と FileVersion は SoT が違い、リリースゲートも 3-part までしか一致を
+        /// 強制しないため、4-part で比べると revision drift だけで判定が壊れる。
+        /// </summary>
+        private static int CompareThreePart(Version a, Version b)
+        {
+            if (a.Major != b.Major) return a.Major.CompareTo(b.Major);
+            if (a.Minor != b.Minor) return a.Minor.CompareTo(b.Minor);
+            int ab = a.Build < 0 ? 0 : a.Build;
+            int bb = b.Build < 0 ? 0 : b.Build;
+            return ab.CompareTo(bb);
+        }
+
         public static int? TryLoadLastExitCode()
         {
             string dir = PathManager.UpdaterLogDir;
@@ -433,6 +450,19 @@ namespace TonePrism.Manager.Services
                         Title = "Manager が時間内に閉じませんでした",
                         Message = "Manager プロセスの終了待機が timeout しました。手動で Manager を閉じてから再試行するか、「強制終了して再試行」を選んでください。",
                         SuggestedAction = ExitAction.RetryWithForceKill,
+                    };
+                case 9:
+                    // (#440 レビュー Medium) 「同一性を確認できないまま上限に達した」専用。
+                    // exit 3 を再利用すると `RetryWithForceKill` が案内されるが、この経路は
+                    // **同一性を確認できないプロセスを kill しない**方針なので、強制終了で再試行しても
+                    // また同じところに戻る = 行き止まりループになる。#440 の教訓 (行き止まりを作らない)
+                    // に反するため、force-kill を勧めない専用の案内に分ける。
+                    return new ExitCodeDispatch
+                    {
+                        Severity = ExitSeverity.Warn,
+                        Title = "Manager を確認できませんでした",
+                        Message = "起動中の Manager を特定できなかったため、データを壊さないよう更新を中止しました。管理ソフトを手動で閉じてから、もう一度お試しください。",
+                        SuggestedAction = ExitAction.Retry,
                     };
                 case 4:
                     return new ExitCodeDispatch
