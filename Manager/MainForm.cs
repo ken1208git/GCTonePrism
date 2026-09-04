@@ -1252,11 +1252,17 @@ namespace TonePrism.Manager
 
             string newVersion = null;
             string completedAtRaw = null;
+            string expectedManagerVersion = null;
             try
             {
                 string json = System.IO.File.ReadAllText(sentinelPath, System.Text.Encoding.UTF8);
                 var dto = Services.JsonCompat.Deserialize<UpdateCompletedSentinel>(json);
-                if (dto != null) { newVersion = dto.NewVersion; completedAtRaw = dto.CompletedAt; }
+                if (dto != null)
+                {
+                    newVersion = dto.NewVersion;
+                    completedAtRaw = dto.CompletedAt;
+                    expectedManagerVersion = dto.NewManagerVersion;
+                }
             }
             catch (Exception ex)
             {
@@ -1273,6 +1279,44 @@ namespace TonePrism.Manager
             {
                 // parse 失敗 / newVersion 不在は dialog 出さず終了 (sentinel は finally で削除済)。
                 return;
+            }
+
+            // (#440) **成功と言う前に、本当に置換されたかを確認する。**
+            //
+            // sentinel は Updater の spawn 成功後に書かれるだけで、spawn した Updater が**その後で**
+            // 失敗するケース (Manager dir の置換失敗) を見ていなかった。そのため置換に失敗した
+            // **古い Manager** が起動して「✓ アップデート完了 / 新しい管理ソフトが起動しています」と
+            // 表示していた。更新失敗に気付けるのはアップデートタブを開いて「前回のアップデート結果:
+            // 内部エラー」を読んだときだけで、実際 v0.9.0 以降 2 リリース分これで隠れていた (#440)。
+            //
+            // ここで比べるのは「入るはずだった Manager の版数」と「今動いている自分の版数」。
+            // 一致しなければ、何が原因であれ置換は完了していない。
+            if (!string.IsNullOrEmpty(expectedManagerVersion))
+            {
+                Version running = Services.VersionInventory.ReadManagerVersion();
+                Version expected;
+                if (running != null && Version.TryParse(expectedManagerVersion, out expected) && running != expected)
+                {
+                    Services.Logger.Error("[MainForm] (#440) アップデートが完了していません: 期待 Manager v"
+                        + expected + " / 実際に起動しているのは v" + running
+                        + " (Manager dir の置換に失敗した可能性)");
+                    int? exitCode = Services.UpdaterClient.TryLoadLastExitCode();
+                    string detail = exitCode.HasValue
+                        ? Services.UpdaterClient.DispatchExitCode(exitCode.Value).Title
+                        : "原因不明";
+                    MessageBox.Show(
+                        "アップデートに失敗しました。\n\n" +
+                        "  管理ソフトが古いままです（v" + running + " / 本来は v" + expected + "）\n" +
+                        "  原因: " + detail + "\n\n" +
+                        "ゲームのデータは失われていません。\n" +
+                        "「アップデート」タブからもう一度お試しください。\n" +
+                        "繰り返し失敗する場合は、配布ページの zip を展開して\n" +
+                        "Install.bat を実行すると確実に更新できます。",
+                        "✗ アップデート未完了",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
             }
 
             // CompletedAt は writer が ISO 8601 UTC で書き出した値 ("yyyy-MM-ddTHH:mm:ssZ")。dialog では
@@ -1420,6 +1464,12 @@ namespace TonePrism.Manager
             /// (camelCase、wire format) でも `CompletedAt` (PascalCase) でも互換的に受理。
             /// </summary>
             public string CompletedAt { get; set; }
+            /// <summary>
+            /// (#440) 置換後に起動しているはずの Manager の FileVersion (例: "0.34.0.0")。
+            /// 再起動した Manager が自分の assembly 版数と突き合わせて**本当に置換されたか**を確認する。
+            /// 旧 sentinel には無いので null 可 — その場合は検証を skip して従来どおり完了 dialog を出す。
+            /// </summary>
+            public string NewManagerVersion { get; set; }
             /// <summary>
             /// 新 Bundle バージョン (例: "0.3.2")。**Bundle 全体の version** (= GitHub Releases tag) で、
             /// Manager 単体 version (例: "0.9.2") ではない (writer 側 `targetVersion.ToString(3)` が

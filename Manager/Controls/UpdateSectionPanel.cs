@@ -804,10 +804,36 @@ namespace TonePrism.Manager.Controls
                 try
                 {
                     string sentinelPath = System.IO.Path.Combine(PathManager.BaseDirectory, ".update_completed");
+                    // (#440) **これから入るはずの Manager の版数**も書く。再起動した Manager が自分の
+                    // assembly 版数と突き合わせて「本当に置換されたか」を確認するために使う。
+                    // sentinel は Updater の **spawn 成功後**に書かれるだけで、spawn した Updater が
+                    // その後で失敗するケース (= Manager dir の置換失敗) を捕まえていなかった。
+                    // その結果、置換に失敗した**古い Manager** が起動して「✓ アップデート完了 /
+                    // 新しい管理ソフトが起動しています」と表示していた (v0.9.0 以降 2 リリース分、
+                    // 更新失敗がこれで隠れていた)。
+                    string expectedManagerVersion = null;
+                    try
+                    {
+                        string stagingManagerExe = System.IO.Path.Combine(
+                            bundleRoot,
+                            (manifest?.Layout?.ManagerDir ?? "files/Manager").Replace('/', System.IO.Path.DirectorySeparatorChar),
+                            "TonePrism_Manager.exe");
+                        if (System.IO.File.Exists(stagingManagerExe))
+                        {
+                            expectedManagerVersion = System.Diagnostics.FileVersionInfo
+                                .GetVersionInfo(stagingManagerExe).FileVersion;
+                        }
+                    }
+                    catch (Exception mvEx)
+                    {
+                        // 取れなくても致命的ではない (旧来どおり Bundle 版数だけの dialog になる)。
+                        Services.Logger.Warn("[UpdateSectionPanel] staging Manager の版数取得に失敗 (完了検証は skip): " + mvEx.Message);
+                    }
                     string json = Services.JsonCompat.Serialize(new
                     {
                         completedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture),
                         newVersion = targetVersion.ToString(3),
+                        newManagerVersion = expectedManagerVersion,
                     });
                     System.IO.File.WriteAllText(sentinelPath, json, System.Text.Encoding.UTF8);
                     Services.Logger.Info("[UpdateSectionPanel] update_completed sentinel 書出し: " + sentinelPath);
