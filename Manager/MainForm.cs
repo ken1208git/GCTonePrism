@@ -855,6 +855,31 @@ namespace TonePrism.Manager
                 shell.Show();
                 Shell.SplashScreenHost.Close(); // (#246) スプラッシュを閉じる
                 Hide(); // Load 完了済なので Hide で安全に裏方化 (= MainForm の窓・タスクバーボタンを消す)
+
+                // (#449) **`Hide()` が Load 境界を越えて維持されるかを実機で確定するための診断ログ。**
+                // レビューでは複製アプリ 6 構成すべてで「post-Load に再表示される」(Visible=True /
+                // IsWindowVisible=True) と実測され、こちらの計測 (PowerShell ハーネス 1 本) とは
+                // 逆の結果になった。複製では決着しないので実アプリで測る。
+                // 再表示されるなら MainForm はタスクバーに残り、SPEC §3.8.2.1 の「起動後は Hide 済み」
+                // という前提と、H-1 の深刻度説明を訂正する必要がある。
+                // **結論が出たらこのログは削除してよい。**
+                Logger.Info("[MainForm] (#449 診断) Hide 直後: Visible=" + Visible
+                    + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle)));
+                try
+                {
+                    BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            Logger.Info("[MainForm] (#449 診断) Load 完了後: Visible=" + Visible
+                                + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle))
+                                + " Opacity=" + Opacity
+                                + " ShowInTaskbar=" + ShowInTaskbar);
+                        }
+                        catch { /* 診断ログの失敗は無視 */ }
+                    }));
+                }
+                catch { /* 診断ログの失敗は無視 */ }
                 // (#246 / レビュー #4) ここから先 (前面化・ステータス反映) は **シェル表示済み** なので、失敗しても
                 // フォールバックせずログのみにする。理由: Hide() 後は外側 catch の Opacity=1 では可視化できず
                 // (Visible=false のまま) フォールバックが死蔵になる + シェルは既に出ているのでフォールバック不要。

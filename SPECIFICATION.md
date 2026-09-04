@@ -1381,6 +1381,10 @@ Release.ps1 と一致 (caller CI は `%ERRORLEVEL%` で 4 通り区別):
 
 Manager の MainForm は WPF シェル移行 (#245) 後、ctor で `Opacity = 0` にされ、`ShowShellAsMain` で `Hide()` される裏方窓になった。**危険はプロセス全期間に及ぶ**（起動中は「まだ表示されていない」、起動後は「Hide 済み」）。
 
+> **未決着 (#449)**: 「`ShowShellAsMain` の `Hide()` が `MainForm_Load` の境界を越えて維持されるか」は結論が出ていない。レビュー側は複製アプリ 6 構成（.NET FW 4.8 / net10、`Opacity` 有無、WPF 込みの構造複製）すべてで**post-Load に再表示される**（`Visible=True` / `IsWindowVisible=True`）と実測し、こちら側の計測（PowerShell ハーネス）は逆の結果だった。複製では決着しないため、`ShowShellAsMain` に診断ログを仕込んで**実機で確定させる**。再表示されるなら MainForm はタスクバーに残るので、上記「起動後は Hide 済み」と、それを根拠にした深刻度の説明を訂正すること。
+>
+> なお**どちらに転んでも本規約と実装は成立する** — `VisibleModalOwner` は `Opacity > 0` も条件にしているため、透明のまま再表示されていても MainForm は owner に選ばれない。
+
 2026-09-04 の実害 (#449) は `MainForm_Load` が return する前 = **MainForm が一度も表示されていない状態**の窓を owner にしたことによる。起動スプラッシュ (#246) は `Topmost="False"` なので原因ではない。
 
 > **注意**: 「透明だから危ない」という理解は誤り。この誤解のまま規約化すると、将来「可視だが `ShowInTaskbar=false` の窓」を owner にして同じ穴が開く（スプラッシュがまさにそれ）。
