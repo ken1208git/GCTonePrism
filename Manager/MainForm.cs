@@ -1301,7 +1301,21 @@ namespace TonePrism.Manager
             // (Release.ps1 の Assert-PublishedManagerVersion) が一致を強制しているのも 3-part までで、
             // revision だけ drift しても公開は通る。4-part で比べると、その場合に全ユーザーが
             // 偽の「✗ アップデート未完了」を食らう。ゲートと同じ粒度にしておく。
-            bool expectedParsed = Version.TryParse(expectedManagerVersion, out expectedVer);
+            // (レビュー C-1) **起動時の consume はここで行う。** アップデートタブの Initialize は
+            // ContinueLoadAfterSessionCheck の中にあり、DB 初期化拒否や同時起動 Cancel では到達しない。
+            // そこに置くと成功記録が消えずに残り、残った exit 0 が後続の失敗を隠す
+            // (resultFileMissing が false になり updaterLeftNoTrace が発火しない)。
+            // 本メソッドは MainForm_Load 冒頭で、どちらの early-return よりも先に走る。
+            var prevState = Services.UpdaterClient.ConsumePreviousRunState();
+
+            // (レビュー C-2) `Version.TryParse` は 2 パート ("1.0") でも成功するが、`ToString(3)` は
+            // 要素数を超える fieldCount で ArgumentException を投げる。expectedManagerVersion は
+            // staging exe の VERSIONINFO 由来の**任意文字列**なので 2 パート値がありうる。
+            // ここで throw すると LoadCore の catch に拾われ、WPF シェルもタブ初期化も skip された
+            // degraded な旧 UI で起動する = 更新が成功していても起動体験が壊れる。
+            // parse できた上で **3 パート以上ある**ことまでを条件にする (Build < 0 が 3 パート未満)。
+            bool expectedParsed = Version.TryParse(expectedManagerVersion, out expectedVer)
+                && expectedVer.Build >= 0;
             // (レビュー 5) parse 失敗は「不一致なし」に倒れる = 版数照合が丸ごと効かない。
             // sentinel の newManagerVersion は FileVersionInfo.FileVersion 由来で、null や
             // "0.34.1.0 (rel)" のような非 Version 文字列になりうる (staging の exe を直接読むこの経路には
@@ -1309,8 +1323,8 @@ namespace TonePrism.Manager
             // 「照合が効いていない」ことが誰にも見えないのは駄目なので必ずログに残す。
             if (!string.IsNullOrEmpty(expectedManagerVersion) && !expectedParsed)
             {
-                Services.Logger.Warn("[MainForm] (#440) 申し送りの newManagerVersion を Version として解釈できません"
-                    + " (版数照合を skip、終了コードと結果ファイルの有無で判定します): " + expectedManagerVersion);
+                Services.Logger.Warn("[MainForm] (#440) 申し送りの newManagerVersion を 3 パート以上の Version として"
+                    + " 解釈できません (版数照合を skip、終了コードと結果ファイルの有無で判定します): " + expectedManagerVersion);
             }
             bool versionMismatch = !string.IsNullOrEmpty(expectedManagerVersion)
                 && running != null
@@ -1319,16 +1333,14 @@ namespace TonePrism.Manager
             // (#440) 一次情報は Updater が書き残した実行結果。無い場合 (旧 Updater) だけ、従来の
             // ログ推測にフォールバックする。ログ推測は「末尾 20 行に [ERROR] があれば失敗」+「直近 2 分」
             // というヒューリスティックで、文言依存で壊れるうえ失敗の翌朝には読めない。
-            var runResult = Services.UpdaterClient.TryLoadUpdateResult();
-            int? exitCode = (runResult != null && runResult.ExitCode.HasValue)
-                ? runResult.ExitCode
-                : Services.UpdaterClient.TryLoadLastExitCode();
+            int? exitCode = Services.UpdaterClient.PreviousRunExitCode
+                ?? Services.UpdaterClient.TryLoadLastExitCode();
             string detail = exitCode.HasValue
                 ? Services.UpdaterClient.DispatchExitCode(exitCode.Value).Title
                 : "原因不明";
-            bool exitFailed = (runResult != null && runResult.Success.HasValue)
-                ? !runResult.Success.Value
-                : (exitCode.HasValue
+            bool exitFailed = (prevState == Services.UpdaterClient.PreviousRunState.Failed)
+                || (prevState != Services.UpdaterClient.PreviousRunState.Succeeded
+                    && exitCode.HasValue
                     && Services.UpdaterClient.DispatchExitCode(exitCode.Value).Severity != Services.ExitSeverity.Success);
 
             // (#440) **結果ファイルが「無い」ことも失敗の証拠になりうる。**
@@ -1346,11 +1358,32 @@ namespace TonePrism.Manager
             // どちらも TryLoadUpdateResult は null を返すが、意味は正反対 — 「無い」は
             // Updater が痕跡を残さず終わった証拠になりうる一方、「読めない」は単に判定できないだけ。
             // 混ぜると、成功した更新でファイルがロック / 破損していただけで偽の「✗ 未完了」を出す。
-            bool resultFileMissing = !Services.UpdaterClient.UpdateResultFileExists();
+            bool resultFileMissing = (prevState == Services.UpdaterClient.PreviousRunState.NoRecord);
             bool updaterLeftNoTrace = !string.IsNullOrEmpty(expectedManagerVersion) && resultFileMissing;
             if (updaterLeftNoTrace)
             {
                 detail = "更新プログラムが結果を残さずに終了しました";
+            }
+
+            // (レビュー D-1) **「確かめられなかった」を「確かめて成功だった」と同じに扱わない。**
+            // 記録が破損している (File.WriteAllText は非アトミックなので停電・強制終了で torn write
+            // しうる) と、失敗の証拠は全部消える — ファイルは在るので updaterLeftNoTrace は発火せず、
+            // ログ推測も 2 分窓を過ぎれば何も返さず、Manager 版数が変わらない Bundle なら版数照合も
+            // 通る。そのまま「✓ 完了」を出すのは、本 PR がまさに直している silent pass そのもの。
+            bool resultUnreadable = (prevState == Services.UpdaterClient.PreviousRunState.Unreadable);
+
+            if (!versionMismatch && !exitFailed && !updaterLeftNoTrace && resultUnreadable)
+            {
+                Services.Logger.Warn("[MainForm] (#440) アップデートの結果を確認できません (.update_result が破損)");
+                MessageBox.Show(
+                    "アップデートの結果を確認できませんでした。\n\n"
+                        + "ゲームのデータは失われていません。そのままお使いいただけます。\n\n"
+                        + "「アップデート」タブでバージョンをご確認ください。\n"
+                        + "古いままだった場合は、もう一度アップデートをお試しください。",
+                    "アップデート結果を確認できません",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
             }
 
             if (versionMismatch || exitFailed || updaterLeftNoTrace)
@@ -1396,16 +1429,9 @@ namespace TonePrism.Manager
                     MessageBoxIcon.Warning);
                 return;
             }
-            // (レビュー Medium-1) **ここでは消さない。**
-            // 本メソッドは MainForm_Load 冒頭 (:384) で走り、アップデートタブの Initialize (:685) より
-            // 先に到達する。ここで成功記録を消すと、タブ側が「結果ファイルの有無」を先に見る防御
-            // (IsPreviousUpdateFailed) が常に「無い」を観測し、旧 Updater 用のログ推測へ落ちる。
-            // ログ推測は「直近 2 分の窓」+「末尾 20 行に [ERROR]」という当てにならない判定なので、
-            // 成功した更新について何を答えるかが保証されない。
-            //
-            // 削除は消費者 (UpdaterClient.HasUnresolvedFailure) に一本化する。タブが必ず起動時に
-            // 読むので、成功記録はこの直後に消える。仮にタブまで到達しなくても、成功記録が残って
-            // 害になることはない (Success=true は誤検知を生まない)。
+            // 成功記録の消費は、このメソッド冒頭の ConsumePreviousRunState で既に済んでいる
+            // (レビュー C-1 で、到達しない経路のあるタブ初期化からここへ移した)。
+            // 結果はプロセス内でキャッシュされるので、タブ側が後から読んでも同じ答えになる。
 
             // CompletedAt は writer が ISO 8601 UTC で書き出した値 ("yyyy-MM-ddTHH:mm:ssZ")。dialog では
             // user-friendly な local time format に変換 ("yyyy-MM-dd HH:mm")。parse 失敗時は空文字で fallback、

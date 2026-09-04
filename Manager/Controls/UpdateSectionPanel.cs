@@ -42,33 +42,11 @@ namespace TonePrism.Manager.Controls
 
             RefreshVersionLabels();
 
-            // 「前回アップデート結果」バナーの材料を **ApplyResult より先に**読む。
-            // (レビュー Medium-2) ApplyResult → IsPreviousUpdateFailed → HasUnresolvedFailure は
-            // 成功記録を消すので、後に読むとバナーだけ「何も出ない」状態になる (ステータス行は
-            // 結果を反映しているのにバナーが黙る = 同一画面で情報源が割れる)。読取り順の依存が
-            // ある以上、コメントで説明するより順序そのものを正す。
-            // 一次情報は Updater の実行結果。ログ推測 (2 分窓) は旧 Updater 用の fallback。
-            var lastRun = UpdaterClient.TryLoadUpdateResult();
-            int? lastExit = (lastRun != null && lastRun.ExitCode.HasValue)
-                ? lastRun.ExitCode
-                : UpdaterClient.TryLoadLastExitCode();
-
-            // (レビュー 3) **ここで無条件に 1 回評価する。**
-            // 成功記録の削除は IsPreviousUpdateFailed → HasUnresolvedFailure の成功経路にしか無い。
-            // これを ApplyResult の `UpToDate` 分岐の中だけで呼ぶと、Initializing / UnknownBundle /
-            // UpdateAvailable / Skipped / CheckFailed では一度も評価されず成功記録が残る
-            // (cache 不在時は LoadCacheOnly が Initializing を直接返すので、実際に起きる)。
-            // 残った exit 0 は後続の失敗を隠す — MainForm の updaterLeftNoTrace は「結果ファイルが無い」
-            // を条件にしているので発火せず、exitFailed も false になり、塞いだはずの行き止まりが戻る。
-            // 「必ず読まれる」という前提を条件分岐の内側に置かない。結果はキャッシュされるので
-            // ApplyResult 側の呼び出しと二重評価にはならない。
-            //
-            // **戻り値を捨てる裸の呼び出しにはしない** — 見た目が no-op なので、将来「これ消しても
-            // いいよね」で消される。副作用 (成功記録の消費) が本体であることを分かる形にする。
-            if (IsPreviousUpdateFailed())
-            {
-                Services.Logger.Info("[UpdateSectionPanel] 前回のアップデートが未完了のまま残っています (再試行を有効化)");
-            }
+            // 「前回アップデート結果」バナーの材料。**読取り順に依存しない** (レビュー A-1) —
+            // ConsumePreviousRunState はプロセス内で 1 回だけ実体評価してキャッシュを返すので、
+            // 起動時ダイアログが先に消費した後でもここで同じ答えと終了コードが読める。
+            // 記録が無い (= 旧 Updater) ときだけ、従来のログ推測にフォールバックする。
+            int? lastExit = UpdaterClient.PreviousRunExitCode ?? UpdaterClient.TryLoadLastExitCode();
 
             // 起動時 hydrate (cache から「前回確認時の状態」を即時表示)
             UpdateCheckResult cached = _updateChecker.LoadCacheOnly();
@@ -360,31 +338,23 @@ namespace TonePrism.Manager.Controls
         /// </summary>
         private bool IsPreviousUpdateFailed()
         {
-            if (_previousUpdateFailed.HasValue) return _previousUpdateFailed.Value;
-            // **結果ファイルの有無を先に見る (レビュー High-2)。** `HasUnresolvedFailure` は成功 /
-            // 読取不能 / 解消済みのどの経路でもファイルを削除するので、その後に不在を見ても
-            // 「新 Updater が結果を残した」と「旧 Updater だった」を区別できない。順序が逆だと、
-            // 更新成功の直後に旧ログ推測へ落ちる。ログ推測は「直近 2 分の窓」+「末尾 20 行に [ERROR]」
-            // という当てにならない判定なので、成功した更新について何を答えるかが保証されない。
-            bool failed;
-            if (UpdaterClient.UpdateResultFileExists())
+            // 判定は UpdaterClient の 3 値 (無い / 読めない / 成功 / 失敗) に一本化する。
+            // 「無い」と「読めない」は意味が正反対 — 前者は旧 Updater / 未更新で失敗の証拠ではなく、
+            // 後者は判定不能。混ぜると、成功した更新で記録が壊れていただけで偽の「未完了」を出す。
+            switch (UpdaterClient.ConsumePreviousRunState())
             {
-                // 記録がある限り、それが一次情報。読めなければ HasUnresolvedFailure が
-                // 判定材料から外す (「読めない」を「失敗」とも「成功」とも読まない)。
-                failed = UpdaterClient.HasUnresolvedFailure();
+                case UpdaterClient.PreviousRunState.Failed:
+                    return true;
+                case UpdaterClient.PreviousRunState.Succeeded:
+                case UpdaterClient.PreviousRunState.Unreadable:
+                    return false;
+                default:
+                    // 記録が無い = 旧 Updater。従来のログ推測にフォールバックする。
+                    int? exitCode = UpdaterClient.TryLoadLastExitCode();
+                    return exitCode.HasValue
+                        && UpdaterClient.DispatchExitCode(exitCode.Value).Severity != ExitSeverity.Success;
             }
-            else
-            {
-                // 結果ファイルが無い = 旧 Updater。従来のログ推測にフォールバックする。
-                int? exitCode = UpdaterClient.TryLoadLastExitCode();
-                failed = exitCode.HasValue
-                    && UpdaterClient.DispatchExitCode(exitCode.Value).Severity != ExitSeverity.Success;
-            }
-            _previousUpdateFailed = failed;
-            return failed;
         }
-
-        private bool? _previousUpdateFailed;
 
         private void ShowPreviousUpdateBanner(int exitCode)
         {

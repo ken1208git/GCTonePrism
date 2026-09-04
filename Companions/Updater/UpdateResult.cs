@@ -63,15 +63,18 @@ namespace TonePrism.Updater
                 if (string.IsNullOrEmpty(installRoot)) return;
 
                 string targetVersion = ReadStagingManagerVersion(stagingDir);
-                // 依存を増やさないため手書きの JSON。値は自前で生成した版数文字列と数値のみで、
-                // ユーザー入力は入らない (escape が要る文字が混ざらない)。
+                // 依存を増やさないため手書きの JSON。
+                // (レビュー D-2) **targetVersion は自前生成ではない** — staging exe の VERSIONINFO
+                // リソース由来の任意文字列で、"1.0.0.0 (release)" のような書式も実在しうる。
+                // `"` / `\` が混ざると JSON が壊れ、次回起動で「あるが読めない」= 判定不能に落ちるので
+                // 最小限の escape を通す。
                 // 成否は `exitCode == 0` から導けるので **success フィールドは持たない**。
                 // 同じ事実の出所が 2 つあると食い違ったときどちらが正か決まらず、しかも bool は
                 // 「欠けている」と「false」を区別できないため、欠落したファイルを失敗と読んでしまう。
                 string json = "{"
                     + "\"finishedAt\":\"" + DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture) + "\","
                     + "\"exitCode\":" + exitCode.ToString(CultureInfo.InvariantCulture) + ","
-                    + "\"targetManagerVersion\":" + (targetVersion == null ? "null" : "\"" + targetVersion + "\"")
+                    + "\"targetManagerVersion\":" + (targetVersion == null ? "null" : "\"" + EscapeJsonString(targetVersion) + "\"")
                     + "}";
 
                 string path = Path.Combine(installRoot, FileName);
@@ -86,8 +89,18 @@ namespace TonePrism.Updater
         }
 
         /// <summary>
+        /// (レビュー D-2) JSON 文字列値の最小 escape。
+        /// </summary>
+        private static string EscapeJsonString(string s)
+        {
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        /// <summary>
         /// staging の Manager.exe から「この更新で入るはずだった版数」を読む。
-        /// **現状 consumer は無い**（版数による自動失効を撤廃したため）。`.update_result` を人が読んで
+        /// (レビュー A-4) 本メソッド自体は置換後の版数検証 (`Program.Run`) からも呼ばれる。
+        /// consumer が無いのは **書き出した `targetManagerVersion` フィールドの方** — 版数による
+        /// 自動失効を撤廃したため、Manager 側は判定に使わず、人が `.update_result` を開いて
         /// 「どの版へ更新しようとして失敗したか」を知るための診断情報として残してある。読めなければ null。
         /// </summary>
         internal static string ReadStagingManagerVersion(string stagingDir)

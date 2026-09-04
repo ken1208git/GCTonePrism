@@ -260,7 +260,7 @@ namespace TonePrism.Manager.Services
         /// (= #440 と同じ行き止まり)。申し送りを残す案は採らない — 手動で `Install.bat` から復旧しても
         /// 結果ファイルは生まれないため、直したのに永久に警告が出続けることになる。
         ///
-        /// 状態の置き場所を `.update_result` 1 つに保つ（失効条件は <see cref="HasUnresolvedFailure"/> を参照）。
+        /// 状態の置き場所を `.update_result` 1 つに保つ（失効条件は <see cref="ConsumePreviousRunState"/> を参照）。
         ///
         /// 終了コードは 1 (汎用エラー = 「内部エラー、ログを確認」) として記録する。Updater が実際の
         /// コードを残せなかった以上、原因は本当に分からない。
@@ -272,9 +272,14 @@ namespace TonePrism.Manager.Services
                 string json = "{"
                     + "\"finishedAt\":\"" + DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture) + "\","
                     + "\"exitCode\":1,"
-                    + "\"targetManagerVersion\":" + (string.IsNullOrEmpty(targetManagerVersion) ? "null" : "\"" + targetManagerVersion + "\"")
+                    + "\"targetManagerVersion\":" + (string.IsNullOrEmpty(targetManagerVersion) ? "null" : "\"" + EscapeJsonString(targetManagerVersion) + "\"")
                     + "}";
                 File.WriteAllText(UpdateResultPath, json, new System.Text.UTF8Encoding(false));
+                // 書いた内容でキャッシュも更新する。しないと、この直後にアップデートタブが
+                // ConsumePreviousRunState を呼んだとき「記録なし」のまま (= 書く前の評価結果) を返し、
+                // せっかく残した失敗記録が再試行導線に反映されない。
+                _previousRun = PreviousRunState.Failed;
+                _previousRunExitCode = 1;
                 Logger.Info("[UpdaterClient] Updater が結果を残さなかったため、Manager 側で未完了を記録しました");
             }
             catch (Exception ex)
@@ -284,7 +289,19 @@ namespace TonePrism.Manager.Services
         }
 
         /// <summary>
-        /// (#440) 実行結果を消す。**唯一の呼び出し元は <see cref="HasUnresolvedFailure"/> の成功経路**
+        /// (レビュー D-2) JSON 文字列値の最小エスケープ。
+        ///
+        /// `targetManagerVersion` は **staging exe の VERSIONINFO リソース由来**であって自前生成の
+        /// 版数文字列ではない。`"1.0.0.0 (release)"` のような任意文字列が入りうるので、`"` / `\` が
+        /// 混ざると JSON が壊れ、次回起動で「あるが読めない」= 判定不能に落ちる。
+        /// </summary>
+        private static string EscapeJsonString(string s)
+        {
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        /// <summary>
+        /// (#440) 実行結果を消す。**唯一の呼び出し元は <see cref="ConsumePreviousRunState"/> の成功経路**
         /// (レビュー Medium-1 で消費者に一本化)。成功はもう覚えておく必要が無い。
         /// 失敗は残す (アップデートタブが再試行ボタンを有効に戻すために後で参照するため)。
         /// </summary>
@@ -295,50 +312,93 @@ namespace TonePrism.Manager.Services
         }
 
         /// <summary>
-        /// (#440) 「前回のアップデートが未完了のまま残っているか」。
+        /// (#440) 前回の Updater 実行がどう終わったか。**「無い」「読めない」「成功」「失敗」を区別する。**
         ///
-        /// **失敗の記録が残っている限り true。版数による自動失効はしない。**
-        /// **記録が消えるのは 3 経路だけ**: (1) 起動時に成功を確認したとき (2) 次の試行が上書きしたとき (3) `Install.bat` が掃除したとき。
-        /// (版数で失効させると、Manager の版数が変わらない Bundle リリースで即座に消えてしまい、
-        ///  起動時ダイアログが案内した再試行導線がその場で消える。詳細は本体のコメント参照。)
+        /// 呼び出し側が `bool` で受け取ると「読めなかった」が「失敗していない」に潰れ、
+        /// 確かめられなかったものを確かめて成功したのと同じに扱ってしまう (レビュー D-1)。
         /// </summary>
-        public static bool HasUnresolvedFailure()
+        public enum PreviousRunState
         {
-            UpdateRunResult result = TryLoadUpdateResult();
-            if (result == null) return false;
-            if (!result.Success.HasValue)
+            /// <summary>結果ファイルが無い。旧 Updater か、まだ一度も更新していない。**失敗の証拠ではない。**</summary>
+            NoRecord,
+            /// <summary>ファイルはあるが終了コードを読めない (torn write / 破損)。**判定材料に使えない。**</summary>
+            Unreadable,
+            /// <summary>成功 (exitCode == 0)。読んだ時点で記録を消費済み。</summary>
+            Succeeded,
+            /// <summary>失敗 (exitCode != 0)。記録は残してある (再試行導線のため)。</summary>
+            Failed,
+        }
+
+        private static PreviousRunState? _previousRun;
+        private static int? _previousRunExitCode;
+
+        /// <summary>
+        /// (#440) 前回の実行結果を**読んで、成功なら消す** (consume)。プロセス内で 1 回だけ実体評価し、
+        /// 以降はキャッシュを返すので、どこから何回呼んでも安全・同じ答えになる。
+        ///
+        /// **かつて `HasUnresolvedFailure` という述語名だった** (レビュー A-1)。`Has...` は副作用の無い
+        /// 問い合わせを期待させるのに実体は consume なので、本 PR だけで読取り順・呼出し位置の事故を
+        /// 4 回踏んだ (バナーを消えた後に読む / 条件分岐の内側にしか無い / 存在確認を後にする /
+        /// 起動時ダイアログが先に消す)。名前を動詞にし、さらに**呼出し順への依存そのものを消す**ため
+        /// 結果をキャッシュした。「先に消える」も「読まれない」も起きない。
+        ///
+        /// **記録が消えるのは 3 経路だけ**: (1) ここで成功を確認したとき (2) 次の試行が上書きしたとき
+        /// (3) `Install.bat` が掃除したとき。**版数では失効させない** — 版数が変わらない Bundle リリースで
+        /// 失敗記録が即座に消え、起動時ダイアログが案内した再試行導線がその場で行き止まりになるため。
+        /// </summary>
+        public static PreviousRunState ConsumePreviousRunState()
+        {
+            if (_previousRun.HasValue) return _previousRun.Value;
+
+            PreviousRunState state;
+            if (!UpdateResultFileExists())
             {
-                // ファイルはあるが値を読めない。ここで「失敗」と決めつけると偽の警告を出すので、
-                // 判定材料として使わず false を返す (呼び出し側は版数比較や従来の推測に倒れる)。
-                // (レビュー Medium-6) **消しはしない。** 消すと SPEC が宣言する 3 経路の外に
-                // 4 つ目の削除が生まれ、「記録がある限り再試行できる」不変条件が崩れる。
-                // 壊れた記録は次の試行が上書きするか Install.bat が掃除する。
-                Logger.Warn("[UpdaterClient] .update_result に終了コードがありません。判定材料として使いません");
-                return false;
+                state = PreviousRunState.NoRecord;
             }
-            if (result.Success.Value)
+            else
             {
-                ClearUpdateResult();
-                return false;
+                UpdateRunResult result = TryLoadUpdateResult();
+                if (result == null || !result.Success.HasValue)
+                {
+                    // ファイルはあるが値を読めない。「失敗」と決めつけると偽の警告を出すので判定材料から
+                    // 外すが、**消しもしない** — 消すと上の 3 経路の外に 4 つ目の削除が生まれ、
+                    // 「記録がある限り再試行できる」不変条件が崩れる。次の試行か Install.bat が掃除する。
+                    Logger.Warn("[UpdaterClient] .update_result を解釈できません。判定材料として使いません");
+                    state = PreviousRunState.Unreadable;
+                }
+                else
+                {
+                    _previousRunExitCode = result.ExitCode;
+                    if (result.Success.Value)
+                    {
+                        ClearUpdateResult();
+                        state = PreviousRunState.Succeeded;
+                    }
+                    else
+                    {
+                        state = PreviousRunState.Failed;
+                    }
+                }
             }
-            // **版数による自動失効はしない (レビュー High-1)。**
-            //
-            // 以前は「実行中の版数が目標に追いついたら解消済み」として記録を消していたが、
-            // **Manager の版数が変わらない Bundle リリース** (Launcher だけ上げた等) では
-            // 失敗した瞬間から `running == target` が成立し、最初の参照で即座に消えてしまう。
-            // すると起動時ダイアログが「✗ 未完了 / タブからもう一度お試しください」と案内した直後に、
-            // そのタブが「最新版を実行中」+ ボタン無効になる = 案内した先が行き止まり、という
-            // #440 でまさに直そうとしている状態が残っていた。
-            //
-            // しかも同じファイルを MainForm は生の成否で、ここは版数失効つきで解釈していた
-            // (= 消費者ごとに意味が違う) のが根。不変条件を 1 本にする:
-            //
-            //   **失敗の記録が残っている限り再試行できる。消えるのは「成功を確認したとき」か
-            //     「次の試行が上書きしたとき」だけ。**
-            //
-            // 代償は、手動で Install.bat から復旧した場合に表示が残ること。ただしボタンは有効なので
-            // 一度押せば同版が再適用されて成功記録に変わり解消する (行き止まりにはならない)。
-            return true;
+            _previousRun = state;
+            return state;
+        }
+
+        /// <summary>
+        /// 前回実行の終了コード (結果ファイルを読めなかった場合は null)。
+        /// <see cref="ConsumePreviousRunState"/> のキャッシュから返すので、成功記録を消した後でも読める
+        /// (= バナー表示が消費順に依存しない)。
+        /// </summary>
+        public static int? PreviousRunExitCode
+        {
+            get { ConsumePreviousRunState(); return _previousRunExitCode; }
+        }
+
+        /// <summary>テスト用。プロセス内キャッシュを捨てて再評価できるようにする。</summary>
+        internal static void ResetPreviousRunStateForTest()
+        {
+            _previousRun = null;
+            _previousRunExitCode = null;
         }
 
         /// <summary>
@@ -419,7 +479,7 @@ namespace TonePrism.Manager.Services
 
         /// <summary>
         /// Updater の exit code を user-facing なメッセージ + 推奨アクションに変換 (SPEC §3.7.4 dispatch 規約)。
-        /// 8 種類の exit code それぞれに対応した user 向け文言を返す。
+        /// exit code 0-9 それぞれに対応した user 向け文言を返す (SPEC §3.7.4 の表と同期すること)。
         /// </summary>
         public static ExitCodeDispatch DispatchExitCode(int exitCode)
         {
@@ -457,19 +517,6 @@ namespace TonePrism.Manager.Services
                         Message = "Manager プロセスの終了待機が timeout しました。手動で Manager を閉じてから再試行するか、「強制終了して再試行」を選んでください。",
                         SuggestedAction = ExitAction.RetryWithForceKill,
                     };
-                case 9:
-                    // (#440 レビュー Medium) 「同一性を確認できないまま上限に達した」専用。
-                    // exit 3 を再利用すると `RetryWithForceKill` が案内されるが、この経路は
-                    // **同一性を確認できないプロセスを kill しない**方針なので、強制終了で再試行しても
-                    // また同じところに戻る = 行き止まりループになる。#440 の教訓 (行き止まりを作らない)
-                    // に反するため、force-kill を勧めない専用の案内に分ける。
-                    return new ExitCodeDispatch
-                    {
-                        Severity = ExitSeverity.Warn,
-                        Title = "Manager を確認できませんでした",
-                        Message = "起動中の Manager を特定できなかったため、データを壊さないよう更新を中止しました。管理ソフトを手動で閉じてから、もう一度お試しください。",
-                        SuggestedAction = ExitAction.Retry,
-                    };
                 case 4:
                     return new ExitCodeDispatch
                     {
@@ -490,8 +537,10 @@ namespace TonePrism.Manager.Services
                     return new ExitCodeDispatch
                     {
                         Severity = ExitSeverity.Warn,
-                        Title = "新 Manager 起動失敗",
-                        Message = "新しい Manager が起動できませんでした (旧 Manager は復元済)。再試行で改善しない場合は Install.bat で再 install してください。",
+                        Title = "新しい管理ソフトを確認できませんでした",
+                        Message = "入れかえた管理ソフトが起動できなかったか、入れかえが反映されていませんでした (旧 Manager は復元済)。"
+                            + "アンチウイルスソフトが更新を妨げていないかを確認してから再試行してください。"
+                            + "改善しない場合は Install.bat で入れ直してください。",
                         SuggestedAction = ExitAction.Retry,
                     };
                 case 7:
@@ -508,6 +557,19 @@ namespace TonePrism.Manager.Services
                         Severity = ExitSeverity.Warn,
                         Title = "一時的な不調",
                         Message = "プロセス列挙が連続失敗しました (IPC / WMI 一時障害の可能性)。数分後に再試行してください。",
+                        SuggestedAction = ExitAction.Retry,
+                    };
+                case 9:
+                    // (#440 レビュー Medium) 「同一性を確認できないまま上限に達した」専用。
+                    // exit 3 を再利用すると `RetryWithForceKill` が案内されるが、この経路は
+                    // **同一性を確認できないプロセスを kill しない**方針なので、強制終了で再試行しても
+                    // また同じところに戻る = 行き止まりループになる。#440 の教訓 (行き止まりを作らない)
+                    // に反するため、force-kill を勧めない専用の案内に分ける。
+                    return new ExitCodeDispatch
+                    {
+                        Severity = ExitSeverity.Warn,
+                        Title = "Manager を確認できませんでした",
+                        Message = "起動中の Manager を特定できなかったため、データを壊さないよう更新を中止しました。管理ソフトを手動で閉じてから、もう一度お試しください。",
                         SuggestedAction = ExitAction.Retry,
                     };
                 default:

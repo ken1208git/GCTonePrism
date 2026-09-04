@@ -23,10 +23,12 @@ namespace TonePrism.Manager.Tests
             _root = Path.Combine(Path.GetTempPath(), "tp_upd_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_root);
             PathManager.SetBaseDirectoryForTest(_root);
+            UpdaterClient.ResetPreviousRunStateForTest();
         }
 
         public void Dispose()
         {
+            UpdaterClient.ResetPreviousRunStateForTest();
             PathManager.ResetBaseDirectoryForTest();
             try { Directory.Delete(_root, true); } catch { /* ignore */ }
         }
@@ -54,7 +56,7 @@ namespace TonePrism.Manager.Tests
         {
             // 成功はもう覚えておく必要が無いので、読んだ時点で消える (平常時はファイルが存在しない)。
             WriteResult(0, "0.34.1.0");
-            Assert.False(UpdaterClient.HasUnresolvedFailure());
+            Assert.NotEqual(UpdaterClient.PreviousRunState.Failed, UpdaterClient.ConsumePreviousRunState());
             Assert.False(ResultFileExists());
         }
 
@@ -64,7 +66,7 @@ namespace TonePrism.Manager.Tests
             // 失敗はアップデートタブが再試行ボタンを有効に戻すために後で参照するので残す。
             // 目標版数が実行中よりずっと先なので、まだ解消していない。
             WriteResult(4, "99.0.0.0");
-            Assert.True(UpdaterClient.HasUnresolvedFailure());
+            Assert.Equal(UpdaterClient.PreviousRunState.Failed, UpdaterClient.ConsumePreviousRunState());
             Assert.True(ResultFileExists());
         }
 
@@ -79,7 +81,7 @@ namespace TonePrism.Manager.Tests
             Version running = VersionInventory.ReadManagerVersion();
             Assert.NotNull(running);
             WriteResult(4, running.ToString(3) + ".0");
-            Assert.True(UpdaterClient.HasUnresolvedFailure());
+            Assert.Equal(UpdaterClient.PreviousRunState.Failed, UpdaterClient.ConsumePreviousRunState());
             Assert.True(ResultFileExists());
         }
 
@@ -102,7 +104,7 @@ namespace TonePrism.Manager.Tests
             // ただし **消さない** (レビュー Medium-6) — SPEC が宣言する 3 つの削除経路の外に
             // 4 つ目を作らない。壊れた記録は次の試行の上書きか Install.bat が掃除する。
             WriteResult(null, "0.34.1.0");
-            Assert.False(UpdaterClient.HasUnresolvedFailure());
+            Assert.NotEqual(UpdaterClient.PreviousRunState.Failed, UpdaterClient.ConsumePreviousRunState());
             Assert.True(ResultFileExists());
         }
 
@@ -110,7 +112,7 @@ namespace TonePrism.Manager.Tests
         public void NoRecord_IsNotFailure()
         {
             // 一度も更新していない / 旧 Updater。ここで失敗扱いすると通常起動のたびに警告が出る。
-            Assert.False(UpdaterClient.HasUnresolvedFailure());
+            Assert.NotEqual(UpdaterClient.PreviousRunState.Failed, UpdaterClient.ConsumePreviousRunState());
         }
 
         [Fact]
@@ -126,7 +128,7 @@ namespace TonePrism.Manager.Tests
             Assert.Equal(1, dto.ExitCode);          // Updater が残せなかったときの汎用エラー
             Assert.False(dto.Success.Value);
             Assert.Equal("0.34.2.0", dto.TargetManagerVersion);
-            Assert.True(UpdaterClient.HasUnresolvedFailure());
+            Assert.Equal(UpdaterClient.PreviousRunState.Failed, UpdaterClient.ConsumePreviousRunState());
         }
 
         [Fact]
@@ -142,13 +144,41 @@ namespace TonePrism.Manager.Tests
         }
 
         [Fact]
+        public void UnreadableRecord_IsDistinctFromNoRecord()
+        {
+            // (レビュー D-1) 「無い」と「読めない」は消費側での意味が正反対。同じ値に潰すと、
+            // 記録が壊れているだけで失敗の証拠が全部消え、silent に「✓ 完了」が出る。
+            Assert.Equal(UpdaterClient.PreviousRunState.NoRecord, UpdaterClient.ConsumePreviousRunState());
+
+            UpdaterClient.ResetPreviousRunStateForTest();
+            File.WriteAllText(Path.Combine(_root, ".update_result"), "{ broken");
+            Assert.Equal(UpdaterClient.PreviousRunState.Unreadable, UpdaterClient.ConsumePreviousRunState());
+            Assert.True(ResultFileExists());   // 判定材料から外すだけで削除はしない
+        }
+
+        [Fact]
+        public void ManagerWrittenRecord_EscapesQuotesAndBackslashesInVersion()
+        {
+            // (レビュー D-2) targetManagerVersion は staging exe の VERSIONINFO 由来の**任意文字列**。
+            // escape しないと JSON が壊れ、次回起動で Unreadable = 判定不能に落ちる。
+            const string weird = "1.0.0.0 \"rel\" \\x";
+            UpdaterClient.RecordFailureWithoutUpdaterResult(weird);
+
+            UpdaterClient.ResetPreviousRunStateForTest();
+            var dto = UpdaterClient.TryLoadUpdateResult();
+            Assert.NotNull(dto);
+            Assert.Equal(weird, dto.TargetManagerVersion);
+            Assert.Equal(UpdaterClient.PreviousRunState.Failed, UpdaterClient.ConsumePreviousRunState());
+        }
+
+        [Fact]
         public void FailureWithoutTargetVersion_NeverExpiresByVersion()
         {
             // 目標版数の有無に関わらず、失敗の記録は残る (版数では失効させない方針)。
             // MainForm 側が「期待版数が取れないときは記録しない」のは、その場合の失敗判定が
             // ログ推測由来で当てにならないためであって、失効可否の話ではない。
             WriteResult(4, null);
-            Assert.True(UpdaterClient.HasUnresolvedFailure());
+            Assert.Equal(UpdaterClient.PreviousRunState.Failed, UpdaterClient.ConsumePreviousRunState());
             Assert.True(ResultFileExists());
         }
     }

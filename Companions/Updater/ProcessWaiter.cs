@@ -77,15 +77,19 @@ namespace TonePrism.Updater
         /// **`--wait-timeout 0` (無制限) でもこの上限は効く。** Manager は通常経路で常に無制限を渡すため
         /// (`UpdaterClient`)、ここを timeout 任せにすると識別不能ケースで永久ループになる。Manager は既に
         /// 終了処理へ入っていて UI が無いので、ユーザーからは「管理ソフトが消えたまま何も起きない」に見える。
-        /// </summary>
+        ///
         /// **(レビュー 9) 既定 `--wait-timeout` (60s) より小さくしてある。** 同値だと、CLI から既定値で
         /// 走らせたとき識別不能の 60 秒と timeout の 60 秒のどちらが先に発火するかが「いつ識別不能に
         /// なったか」次第になる。timeout 側が勝つと exit 3 が返り、その案内 (`--force-kill` を付けて再試行)
         /// に従うと下の `forceKill && unidentified` ガードで必ず exit 9 に落ちる = 1 往復無駄になる。
         /// 小さくしておけば「識別不能の方が必ず先に判定される」を機械的に保証できる。
-        /// (明示的に 45s 未満を渡した場合は timeout が勝つが、それは呼び出し側の明示的な選択。
+        /// (明示的にこの値未満の timeout を渡した場合は timeout が勝つが、それは呼び出し側の明示的な選択。
         ///  Manager は常に `--wait-timeout 0` を渡すので通常運用はどちらにせよ本上限のみが効く。)
-        private const int UnidentifiedCapSeconds = 45;
+        ///
+        /// **この値を変えたら `CliArgs.UsageText` は自動追従する** (補間で参照済み) が、
+        /// `Program` の docstring と SPEC §3.7.4 の exit 9 の行は手で直すこと (レビュー A-2)。
+        /// </summary>
+        internal const int UnidentifiedCapSeconds = 45;
 
         /// <summary>
         /// Manager プロセスが全て終了するまで polling で待機する。
@@ -194,6 +198,13 @@ namespace TonePrism.Updater
                     {
                         if (forceKill && unidentified)
                         {
+                            // **(レビュー A-3) 出荷される 2 設定では到達しない防御コード。**
+                            // 上の UnidentifiedCapSeconds 判定が timeout 判定より前にあり、Manager が渡すのは
+                            // `--wait-timeout 0` (通常) か既定 60s (force-kill 経路) のどちらかなので、
+                            // 前者はこの分岐に入らず、後者は 45s で先に exit 9 へ降りる。
+                            // それでも残すのは、将来 `--force-kill` の配線や上限値を変えたときの防波堤のため。
+                            // 「dead では？」で消さないこと。
+                            //
                             // (#440) 同一性を確認できていないプロセスは **kill しない**。ここを kill すると
                             // 「同名 exe の別 install / 別権限の Manager を巻き添えで落とす」という、
                             // path 検証がまさに防いでいる事故が読み取り不能ケースについてだけ復活する。
