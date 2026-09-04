@@ -526,8 +526,15 @@ namespace TonePrism.Manager
                         // in-depth で残置。
                         if (IsDisposed || Disposing || _sessionService == null) return;
 
+                        // (#449) **`this` を渡さない。** ここはシェル表示前 (MainForm_Load から
+                        // BeginInvoke した deferred action) で MainForm は Opacity=0 の不可視窓。
+                        // SessionConflictDialog の API contract も「owner Form を **visible 状態で**
+                        // 渡せば自然な owner-modal child 挙動になる」と明記しており、不可視窓を渡すのは
+                        // 契約違反だった。owner なし (top-level) に倒してタスクバー / Alt+Tab から
+                        // 戻せるようにする。
                         var dialogResult = SessionConflictDialog.Show(
-                            this, SessionConflictDialogContext.Startup, otherSessionsAtStartup, launcherSessionsAtStartup);
+                            StartupDialogOwner(), SessionConflictDialogContext.Startup,
+                            otherSessionsAtStartup, launcherSessionsAtStartup);
                         if (dialogResult == DialogResult.Cancel)
                         {
                             Logger.Info("[MainForm] user が SessionConflictDialog (Startup) で Cancel 選択、Manager 終了");
@@ -775,12 +782,19 @@ namespace TonePrism.Manager
             // 起動時に zombie staging dir (前回 update 失敗の残骸) を cleanup (#108 Phase 4)
             CleanupZombieStagings();
 
+            // (#245 PR5 startup移管 step1) 全 init 完了後、WPF シェルを可視 main として表示し MainForm を裏方化する。
+            //
+            // **更新チェックより先に可視化する (#449)。** 逆順だと、cache が TTL 内のとき
+            // `CheckAsync` が完了済み Task を返し、**完了済み Task の await は継続が同期実行される**ため
+            // そのまま通知 MessageBox に突入して `StartBackgroundUpdateCheckIfDue()` から戻らず、
+            // この行に永久に到達しない = スプラッシュのまま固まる。cache が冷えていれば本物の HTTP で
+            // 非同期になり戻ってくるので、**「ネットワークが遅いおかげで助かっている」**だけの状態だった。
+            // 順序を固定してタイミング依存を消す。
+            ShowShellAsMain();
+
             // 起動時にバックグラウンドで GitHub Releases API を叩いてアップデート check (#108 Phase 4)
             // cache TTL 内なら HTTP を叩かない、起動を遅延させない fire-and-forget pattern
             StartBackgroundUpdateCheckIfDue();
-
-            // (#245 PR5 startup移管 step1) 全 init 完了後、WPF シェルを可視 main として表示し MainForm を裏方化する。
-            ShowShellAsMain();
         }
 
         /// <summary>
@@ -962,6 +976,24 @@ namespace TonePrism.Manager
         /// 経由で UI thread に戻るため `InvokeRequired = false` 確定の dead path だった。defensive
         /// として残す場合は **synchronous Invoke** で recursive call の結果を caller に正確に返す形に。
         /// </summary>
+        /// <summary>
+        /// (#449) **起動シーケンス中のモーダルに渡す owner。**
+        ///
+        /// 可視シェルがあればそれを返す (シェルに対して正しくモーダルになる)。まだ無ければ
+        /// <c>null</c> = owner なしで出す — 所有されない dialog は top-level 窓になるので
+        /// タスクバー / Alt+Tab から必ず戻せる。
+        ///
+        /// **不可視の MainForm を owner にしてはいけない。** MainForm は ctor で `Opacity = 0` にされ、
+        /// シェル表示後は `Hide()` される。透明 / 非表示の窓を owner にすると、Windows の仕様で
+        /// **所有ダイアログはタスクバーボタンも Alt+Tab エントリも持たない**。一度 z-order で他の窓の
+        /// 下に潜るとユーザーが前面に戻す手段が無くなり、「起動スプラッシュのまま進まない・閉じられない」
+        /// に見える。実際に仮想本番で 8 分間停止し、Win32 API で外から閉じるしかなかった。
+        /// </summary>
+        private IWin32Window StartupDialogOwner()
+        {
+            return Shell.ShellOwner.For(Shell.ShellWindow.Instance);
+        }
+
         private bool ShowUpdateAvailableNotification(Models.UpdateCheckResult result)
         {
             if (InvokeRequired)
@@ -990,8 +1022,22 @@ namespace TonePrism.Manager
             DialogResult dr;
             try
             {
-                dr = MessageBox.Show(this, message, "アップデートの通知",
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1);
+                // **不可視の MainForm を owner にしない (#449)。**
+                // MainForm は ctor で `Opacity = 0` にしてあり、シェル表示後は `Hide()` される。
+                // 透明 / 非表示の窓を owner にすると、Windows の仕様で **所有ダイアログはタスクバー
+                // ボタンも Alt+Tab エントリも持たない**。つまり一度 z-order で他の窓の下に潜ると
+                // ユーザーが前面に戻す手段が無くなり、「スプラッシュから進まない・閉じられない」に見える
+                // (実際に仮想本番で発生し、Win32 API で外から閉じるしかなかった)。
+                //
+                // 可視シェルがあればそれを owner にする (シェルに対して正しくモーダルになる)。
+                // まだ無ければ **owner なし** で出す — 所有されない dialog は top-level 窓になるので
+                // タスクバー / Alt+Tab から必ず戻ってこられる。
+                IWin32Window owner = StartupDialogOwner();
+                dr = owner != null
+                    ? MessageBox.Show(owner, message, "アップデートの通知",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1)
+                    : MessageBox.Show(message, "アップデートの通知",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1);
             }
             catch (Exception ex)
             {
@@ -1553,8 +1599,9 @@ namespace TonePrism.Manager
                 "   別場所で管理されていたため)。\n" +
                 "\n" +
                 "設定タブの「ログ」セクションから保存先を変更できます。";
+            // (#449) 起動シーケンス中なので不可視 MainForm を owner にしない。
             MessageBox.Show(
-                this,
+                StartupDialogOwner(),
                 body,
                 "ログの保存先の構造が変わりました",
                 MessageBoxButtons.OK,

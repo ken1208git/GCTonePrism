@@ -2546,6 +2546,21 @@ PR #150 で dir rename (`GCTonePrism_Launcher/` → `Launcher/`) に連動して
 
 ## Manager（管理ソフト）
 
+### [Manager v0.34.3] - 2026-09-04
+
+- **起動時のダイアログが前面に戻せなくなり、起動スプラッシュのまま固まる問題を修正 (#449)**。仮想本番で 8 分間停止し、外部から Win32 API でダイアログを閉じるまで復帰しなかった。
+- **原因 (1): 不可視の窓を owner にしていた**。MainForm は WPF シェル移行後、ctor で `Opacity = 0` にされ（`MainForm_Load` の全区間で透明）、シェル表示後は `Hide()` される裏方になっている。**透明 / 非表示の窓を owner にすると、Windows の仕様で所有ダイアログはタスクバーボタンも Alt+Tab エントリも持たない。** 一度 z-order で下に潜ると、ユーザーが前面に戻す手段が一つも無くなる。なお起動スプラッシュは `Topmost="False"` なので**スプラッシュは原因ではない**（当初そう疑ったが誤り）。
+- **原因 (2): 通知がシェル可視化より先に走りうる**。`StartBackgroundUpdateCheckIfDue()` が `ShowShellAsMain()` より前に置かれていた。`UpdateChecker.CheckAsync` は cache が TTL 内なら HTTP を叩かず**完了済み Task** を返し、**完了済み Task の await は継続が同期実行される**ため、そのまま MessageBox に突入して呼び出しから戻らず、シェル可視化に永久に到達しない。cache が冷えていれば本物の HTTP で非同期になり戻ってくるので、**「ネットワークが遅いおかげで助かっている」**だけのタイミング依存だった。
+- **修正**: (a) `ShowShellAsMain()` を更新チェックより**前**へ移してタイミング依存を消す、(b) 起動経路のモーダル owner を `StartupDialogOwner()` に集約し、**可視シェルがあればそれを、無ければ owner なし**（所有されない dialog は top-level 窓になるのでタスクバー / Alt+Tab から必ず戻せる）に倒す。
+- **起動経路のダイアログを全数監査**し、同じ穴が空いていた 2 件も同時に修正した。
+  - **同時起動の競合ダイアログ (Startup)**: `SessionConflictDialog.Show(this, ...)` と不可視 MainForm を渡していた。同 dialog の docstring は「caller が owner を **visible 状態で**渡せば自然な owner-modal child 挙動になる」を API contract と明記しており、**契約違反**だった。なおこの dialog は残りの初期化を止める**ゲート**なので「シェルを先に出す」ことはできない（シェルはまだ無く、出せばゲートの意味が消える）。owner なしに倒すことで解決している。
+  - **ログ保存先の移行通知 (#201)**: 同じく `this` を渡していた。
+  - DB 初期化プロンプト ×2 / 更新の完了・未完了・確認不能 ×3 / `Program.cs` の起動エラー ×2 は**元から owner なし**で問題なし。**だから今まで表面化していなかった**。
+  - 起動失敗フォールバック (`FallbackToVisibleMainForm`) は `this` のままで正しい — スプラッシュを閉じ `Opacity = 1` + `Show()` してから出しており、契約を満たしている。
+- **維持すべき不変条件**: 起動経路のモーダルに渡す owner は**「可視の窓」か `null` のどちらかだけ**。不可視の窓は渡さない。
+- 通知マーカー (`update_notified_tag`) は MessageBox が正常に閉じたときだけ記録されるため、**タスクマネージャーで kill しても逃げられず次回起動でも同じ場所で止まる**という性質があった。本修正でその入口ごと塞がる。
+- bump 判断: bugfix のみ。**patch（v0.34.2 → v0.34.3）**。
+
 ### [Manager v0.34.2] - 2026-09-04
 
 - **更新前の起動中プロセスチェックに「自分以外の Manager」を追加 (#444)**。従来は Launcher と Companions しか見ておらず（`ProcessTerminator.EnumerateRunning`）、**同じ PC で 2 つ目の Manager が開いていても素通り**していた。2 つ目は単一起動チェックで modal を出すが、**その modal は OK を押すまで閉じず、その間 `Manager/` 配下の exe / dll を掴み続ける**。本番ではこれが 2 分 42 秒生き残り、Updater の `Manager` → `Manager.bak` rename がアクセス拒否になった（2026-09-04、v0.11.1 の適用失敗）。

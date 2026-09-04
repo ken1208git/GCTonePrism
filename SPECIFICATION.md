@@ -1371,6 +1371,19 @@ Release.ps1 と一致 (caller CI は `%ERRORLEVEL%` で 4 通り区別):
 - **Startup context** title: `【危険】別の Manager / Launcher が稼働中です` (#251、旧「他 PC で Manager が起動中」→ PR3b「他 PC で Manager / Launcher が稼働中」→ #251 で「他 PC」前提撤回)。body の主旨: 「別の Manager や Launcher が動いたままこの Manager を使うと、保存中のデータや バックアップが競合して、データが破損したり消えたりする恐れがあります」+ 検出 PC list (pc_name + 最終確認 N 秒前、最大 5 件 + 残件数要約)。
 - **EditOperation context** title: `【危険】別の Manager / Launcher が稼働中です` (#251、旧「他 PC で誰かが作業中です」→ 同一 PC Launcher 検出で噛み合わない case を解消し Startup と統一)。body の主旨: 「**このまま {operationDescription} を実行すると、別の Manager / Launcher と競合して、データが破損したり保存内容が消えたりする恐れがあります**」(round 2 Medium-1 で「保存すると {op} の内容と...」から汎用文「{op} を実行すると...」に変更、operation 種別が削除 / 初期化 / 並び替え 等で grammatical に成立しなかった drift を解消)。
 
+#### 3.8.2.1 起動経路のモーダル owner 規約 (#449)
+
+**起動シーケンス中に出すモーダルの owner は「可視の窓」か `null` のどちらかに限る。不可視の窓を渡してはならない。**
+
+Manager の MainForm は WPF シェル移行 (#245) 後、ctor で `Opacity = 0` にされ（`MainForm_Load` の全区間で透明）、シェル表示後は `Hide()` される裏方窓になっている。**透明 / 非表示の窓を owner にすると、Windows の仕様で所有ダイアログはタスクバーボタンも Alt+Tab エントリも持たない**ため、z-order で他の窓の下に潜るとユーザーが前面に戻す手段が一つも無くなる。実際に 2026-09-04 の仮想本番で「起動スプラッシュのまま 8 分間停止し、外部から Win32 API で閉じるまで復帰しない」状態が発生した (#449)。
+
+- 実装は `MainForm.StartupDialogOwner()` に集約する。可視シェル (`ShellWindow.Instance`) があればそれを、無ければ `null` を返す
+- `null`（owner なし）の dialog は top-level 窓になるので、タスクバー / Alt+Tab から必ず戻せる
+- **起動スプラッシュ (#246) は `Topmost="False"` なので原因ではない。** owner 側の問題として扱うこと
+- **同時起動の競合 dialog (Startup) は「シェルを先に出す」解決ができない** — 残りの初期化を止めるゲートであり、シェルはまだ存在せず、出せばゲートの意味が消える。owner なしに倒すのが正解
+- 例外は `FallbackToVisibleMainForm` のみ。ここは**スプラッシュを閉じ `Opacity = 1` + `Show()` してから**出すので `this` を渡してよい（契約を満たしている）
+- **MainForm 撤去時の注意**: 本規約自体は MainForm 非依存なのでそのまま生きる（むしろシェルが起動当初から存在するので常に可視 owner が取れる）。ただし `FallbackToVisibleMainForm` は退避先が MainForm 自身なので代替が必要。詳細は #245
+
 #### 3.8.3 同 PC 重複起動 block (Named Mutex)
 
 - **目的**: LAN table の `pc_name` PRIMARY KEY は同 PC 1 row のみ許容するため、同 PC 重複起動は table 経由検出できない (= `INSERT OR REPLACE` で前者の row が silent 上書きされ、2 process が同 row を交互に取り合う)。Named Mutex で物理 prevention に倒し、責務を分離する。
@@ -3286,6 +3299,7 @@ JSON がゲームを指すキーは `game_id`（文字列）ではなく `games.
 
 | 日付 | バージョン | 変更内容 | 変更者 |
 | --- | --- | --- | --- |
+| 2026-09-04 | 1.10.73 | **(#449、Manager v0.34.3)** §3.8.2.1「起動経路のモーダル owner 規約」を新設 — **起動シーケンス中のモーダルに渡す owner は「可視の窓」か `null` のどちらかに限る**。WPF シェル移行後の MainForm は `Opacity = 0` の裏方窓で、不可視の窓を owner にすると所有ダイアログがタスクバー / Alt+Tab から消え、z-order で潜ると前面に戻せなくなる（2026-09-04 の仮想本番で 8 分間停止、Win32 API で外から閉じるまで復帰せず）。スプラッシュは `Topmost="False"` で原因ではないこと、同時起動の競合 dialog はゲートゆえ「シェルを先に出す」解決が取れず owner なしに倒すこと、`FallbackToVisibleMainForm` だけは可視化後に渡すので例外であること、MainForm 撤去時は同フォールバックの代替が要ることも明記。 | Kenshiro Kuroga \& Claude |
 | 2026-09-04 | 1.10.72 | **(#444、Updater v0.2.3 / Manager v0.34.2)** §3.7.4 の `--caller-pid` に、**`--caller-pid` 指定モードでも同一 install（`--restart-exe` と同じ exe path）の Manager プロセスをすべて待つ**規約を追記。PID 限定は他 install の巻き添え防止が目的で、同一 install の別プロセスを無視してよいという意味ではなかった。2026-09-04 の本番事故（2 つ目の Manager が単一起動 modal を出したまま 2 分 42 秒生存し、`Manager` → `Manager.bak` rename がアクセス拒否 → v0.11.1 の適用失敗）を受けての明文化。Manager 側の更新前プロセスチェックにも自分以外の Manager を含める。 | Kenshiro Kuroga \& Claude |
 | 2026-09-04 | 1.10.71 | **(#440、Updater v0.2.2 / Manager v0.34.1)** §3.7.3 の sentinel schema に `newManagerVersion`（旧 sentinel では欠落しうる = null 可、検証 skip で後方互換）を追加し、消費者の記述に**完了検証**を追記。sentinel は Updater の spawn 成功後に書かれるだけで、spawn した Updater が**その後で**失敗するケースを捕まえず、置換に失敗した古い Manager が「✓ アップデート完了」を出す silent path があった（v0.9.0 以降 2 リリース分、更新失敗がこれで隠れていた）。判定は「版数の不一致」と「Updater の終了コード」の **OR**（版数一致は成功を意味しない）、失敗は **`<install>/.update_result`** に残す（終了コードのログは直近 2 分しか遡れないため）。判定の 3 つ目の条件として「版数入りの申し送りがあるのに結果が無い」（= Updater が痕跡を残さず終わった）も見る。あわせて **§3.7.6.1「Updater のビルド制約」を新設** — `Prefer32Bit=false` 必須、判定は `GetPEKind`、「識別できない」を「終了済み」と読まない、ただし無限に待たず独立した上限で中止、同一性未確認のプロセスは kill 対象に入れない。**`.update_result` の寿命も明文化** — 版数では失効させず（版数が変わらない Bundle リリースで失敗記録が即消えて再試行導線が行き止まりになるため）、消えるのは「成功確認」「次の試行の上書き」「`Install.bat` の掃除」の 3 経路のみ。読めない記録は判定から外すが削除もしない（ただし**再試行の導線は閉じない** — 消さない以上その状態は自然解消せず、ボタンまで無効にすると行き止まりになるため）。失敗と判定したのに失敗の記録が残っていない場合は Manager 側が記録を書く（版数照合だけで検出したケースを取りこぼさない）。**§3.7.4 の Exit codes リストに `9`（同一性確認不能）を追加** — `3` と分ける理由（force-kill を勧めると必ず同じ所へ戻る行き止まりになる）と、上限を既定 `--wait-timeout` より小さく取る理由（識別不能の判定が必ず timeout より先に発火することの機械的保証）を含める。あわせてログ推測の弱点の記述を実態に合わせて訂正（「致命的でない `Logger.Error` で誤判定する」は誤り＝現状 `[ERROR]` は全て非 0 return 経路にある。本当の弱点は文言依存・2 分窓・将来の脆さ）。`Install.bat` の掃除タイミングを「起動時」→「インストール完了時」に訂正。**結果ファイルの消費を `ConsumePreviousRunState()` に一本化**（起動処理の冒頭で 1 回、UI パネル初期化は到達しない経路があるため不可／判定をプロセス内キャッシュして読取り順依存を除去／述語名 `HasUnresolvedFailure` から動詞へ改名）、**判定を 3 値化**（`Unreadable` を `bool` に潰すと記録破損時に silent pass する経路が残る）、exit 6 の定義に「置換が反映されていなかった」を追加。 | Kenshiro Kuroga \& Claude |
 | 2026-09-04 | 1.10.70 | **(#344、Launcher v0.15.0)** §機能4（オーバーレイメニュー）に **初回ゲーム起動時のやめかた案内** を追記。来場者ごとに 1 回、`_launch_game()` 冒頭（`begin_launch` の前）で表示する。**リセットを `screensaver.gd::_ready()` に置く**ことを明記 — `AppState.clear()` は `transition_to_screensaver` 13 経路のうち 2 経路でしか呼ばれず、「遊び終えて退出」「放置して帰る」という最も多い帰り方が通らないため、そこに紐づけると次の来場者に案内が出ない（かつ前の人の帰り方依存で再現不能な形で壊れる）。試遊は `_launch_game()` を通らないので追加ガード不要。 | Kenshiro Kuroga \& Claude |
