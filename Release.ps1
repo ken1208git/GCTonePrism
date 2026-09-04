@@ -1614,6 +1614,15 @@ function Assert-UpdaterBitness {
     #
     # 判定に PE ヘッダの machine は使えない (AnyCPU は常に I386/PE32)。COR フラグを見る必要があるので
     # `Assembly.GetPEKind` を使う。ReflectionOnlyLoadFrom はコードを実行しない。
+    #
+    # **前提が 2 つある (レビュー Low-3)**:
+    #  (1) `ReflectionOnlyLoadFrom` は **Windows PowerShell 5.1 (.NET Framework) 専用**。PowerShell 7+
+    #      (.NET Core) では PlatformNotSupportedException になる。Release.bat が 5.1 (`powershell.exe`) で
+    #      起動する前提に依存しているので、7+ へ移す場合はここを `System.Reflection.Metadata` の
+    #      PEReader (CorFlags を直接読む) に書き換えること。catch は Fail に落ちるので**黙って通ることは無い**。
+    #  (2) 読み込んだ assembly は**プロセスが終わるまでファイルを掴む**。以降この exe を
+    #      削除・上書きする step があると失敗する。現状 Build-Updater は先頭で bin/Release を消してから
+    #      build するので、1 プロセス 1 回の実行では衝突しない (staging へのコピーは読み取りのみ)。
     if (-not (Test-Path $ExePath)) {
         Fail "Updater の bitness を検証できません (exe が見つかりません): $ExePath"
     }
@@ -1667,9 +1676,6 @@ function Build-Updater {
     }
     Write-Ok "msbuild 完了"
 
-    # (#440) 32bit で焼かれていないことを公開前に hard fail で確認する。
-    Assert-UpdaterBitness -ExePath (Join-Path $binRelease 'TonePrism_Updater.exe')
-
     # bin/Release/ から staging へコピー (*.pdb 除外)
     # 配布構造は SPEC §3.7.1 / §2.4 に従い `<staging>/files/Companions/Updater/` 配下に配置
     #
@@ -1699,6 +1705,12 @@ function Build-Updater {
     if (-not (Test-Path $expectedExe)) {
         Fail "Updater ビルド出力に TonePrism_Updater.exe が見つかりません: csproj の AssemblyName が変更された可能性 (期待 path: $expectedExe)"
     }
+
+    # (#440) 32bit で焼かれていないことを公開前に hard fail で確認する。
+    # **上の存在 check より後に置く**: Assert-UpdaterBitness 自身も Test-Path で落ちるが、その文言は
+    # 「exe が見つかりません」止まりで、dir 不在 / AssemblyName 変更といった原因を言い当てられない
+    # (レビュー Low-2)。診断の細かい方を先に通してから bitness を見る。
+    Assert-UpdaterBitness -ExePath $expectedExe
     $outDir = Join-Path $FilesDir 'Companions\Updater'
     New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 

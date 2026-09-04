@@ -40,21 +40,23 @@ namespace TonePrism.Manager.Controls
             _dbManager = dbManager;
             _updateChecker = new UpdateChecker(dbManager.SettingsRepository);
 
-            // 起動時 hydrate (cache から「前回確認時の状態」を即時表示)
             RefreshVersionLabels();
-            UpdateCheckResult cached = _updateChecker.LoadCacheOnly();
-            ApplyResult(cached);
 
-            // 「前回アップデート結果」バナーがあれば表示。
-            // (#440 レビュー Low) ここも一次情報は Updater の実行結果。ログ推測は 2 分窓しか遡れず、
-            // 失敗の翌朝に起動すると「ステータス行は未完了と言うのにバナーは何も出ない」という
-            // 同一画面内で情報源が割れた状態になる。
+            // 「前回アップデート結果」バナーの材料を **ApplyResult より先に**読む。
+            // (レビュー Medium-2) ApplyResult → IsPreviousUpdateFailed → HasUnresolvedFailure は
+            // 成功記録を消すので、後に読むとバナーだけ「何も出ない」状態になる (ステータス行は
+            // 結果を反映しているのにバナーが黙る = 同一画面で情報源が割れる)。読取り順の依存が
+            // ある以上、コメントで説明するより順序そのものを正す。
+            // 一次情報は Updater の実行結果。ログ推測 (2 分窓) は旧 Updater 用の fallback。
             var lastRun = UpdaterClient.TryLoadUpdateResult();
             int? lastExit = (lastRun != null && lastRun.ExitCode.HasValue)
                 ? lastRun.ExitCode
                 : UpdaterClient.TryLoadLastExitCode();
-            // 注: バナーはここで 1 度読むだけ。IsPreviousUpdateFailed (ApplyResult 経由) が
-            // 記録を消す場合があるので、消える前に読んでおく。
+
+            // 起動時 hydrate (cache から「前回確認時の状態」を即時表示)
+            UpdateCheckResult cached = _updateChecker.LoadCacheOnly();
+            ApplyResult(cached);
+
             if (lastExit.HasValue)
             {
                 ShowPreviousUpdateBanner(lastExit.Value);

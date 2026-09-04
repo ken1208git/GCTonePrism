@@ -98,10 +98,12 @@ namespace TonePrism.Manager.Tests
         [Fact]
         public void RecordWithoutExitCode_IsNotTreatedAsFailure()
         {
-            // 「欠けている」を「失敗」と読むと偽の警告になる。判定材料から外して捨てる。
+            // 「欠けている」を「失敗」と読むと偽の警告になる。判定材料から外す。
+            // ただし **消さない** (レビュー Medium-6) — SPEC が宣言する 3 つの削除経路の外に
+            // 4 つ目を作らない。壊れた記録は次の試行の上書きか Install.bat が掃除する。
             WriteResult(null, "0.34.1.0");
             Assert.False(UpdaterClient.HasUnresolvedFailure());
-            Assert.False(ResultFileExists());
+            Assert.True(ResultFileExists());
         }
 
         [Fact]
@@ -109,6 +111,34 @@ namespace TonePrism.Manager.Tests
         {
             // 一度も更新していない / 旧 Updater。ここで失敗扱いすると通常起動のたびに警告が出る。
             Assert.False(UpdaterClient.HasUnresolvedFailure());
+        }
+
+        [Fact]
+        public void ManagerWrittenRecord_IsReadableByTheReader()
+        {
+            // (レビュー Medium-3) 他のテストはどれも**テスト自身が組み立てた JSON** を読ませており、
+            // 製品コードが手書きしている文字列を一度も通っていない。producer 側の typo
+            // (キー名・クォート・カンマ) はそれでは落ちない。ここだけは実 producer を呼ぶ。
+            UpdaterClient.RecordFailureWithoutUpdaterResult("0.34.2.0");
+
+            var dto = UpdaterClient.TryLoadUpdateResult();
+            Assert.NotNull(dto);
+            Assert.Equal(1, dto.ExitCode);          // Updater が残せなかったときの汎用エラー
+            Assert.False(dto.Success.Value);
+            Assert.Equal("0.34.2.0", dto.TargetManagerVersion);
+            Assert.True(UpdaterClient.HasUnresolvedFailure());
+        }
+
+        [Fact]
+        public void ManagerWrittenRecord_WithoutTargetVersion_IsStillReadable()
+        {
+            // 目標版数が無い場合に `null` を裸で書く分岐 (クォートしない) も producer を通して固定する。
+            UpdaterClient.RecordFailureWithoutUpdaterResult(null);
+
+            var dto = UpdaterClient.TryLoadUpdateResult();
+            Assert.NotNull(dto);
+            Assert.Equal(1, dto.ExitCode);
+            Assert.Null(dto.TargetManagerVersion);
         }
 
         [Fact]

@@ -1355,15 +1355,11 @@ namespace TonePrism.Manager
                 //
                 // 申し送りの方を残す案は採らない — 手動で Install.bat から復旧しても結果ファイルは
                 // 生まれないため、直したのに永久に警告が出続けることになる。状態の置き場所を
-                // .update_result 1 つに保てば、版数が追いついた時点で自動失効するので手動復旧でも解消する。
+                // .update_result 1 つに保つ (消えるのは成功確認 / 次の試行の上書き / Install.bat の掃除の 3 経路)。
                 //
-                // **期待版数が無いときは記録しない。** 記録に目標版数を入れられないと自動失効の
-                // 手掛かりが無くなり、手動で Install.bat から復旧しても警告が残り続ける。
-                // しかもその場合の失敗判定はログ推測 (末尾 20 行の [ERROR]) 由来で当てにならない。
-                // 当てにならない根拠で消せない記録を残すくらいなら、記録しない方が正しい。
-                // 記録が既にあるなら上書きしない。無いときだけ Manager 側で残す。
-                // 期待版数が取れないときは記録しない — その場合の失敗判定はログ推測 (末尾 20 行の
+                // **期待版数が無いときは記録しない。** その場合の失敗判定はログ推測 (末尾 20 行の
                 // [ERROR]) 由来で当てにならず、当てにならない根拠で貼りつく状態を作るべきではない。
+                // 記録が既にあるなら上書きしない。無いときだけ Manager 側で残す。
                 if (resultFileMissing && !string.IsNullOrEmpty(expectedManagerVersion))
                 {
                     Services.UpdaterClient.RecordFailureWithoutUpdaterResult(expectedManagerVersion);
@@ -1389,10 +1385,16 @@ namespace TonePrism.Manager
                     MessageBoxIcon.Warning);
                 return;
             }
-            // 検証を通った = 置換は完了している。**成功はもう覚えておく必要が無い**ので実行結果を消す。
-            // (失敗のときだけ残し、アップデートタブが再試行ボタンを有効に戻すのに使う。
-            //  平常時は .update_result が存在しない状態になる。)
-            Services.UpdaterClient.ClearUpdateResult();
+            // (レビュー Medium-1) **ここでは消さない。**
+            // 本メソッドは MainForm_Load 冒頭 (:384) で走り、アップデートタブの Initialize (:685) より
+            // 先に到達する。ここで成功記録を消すと、タブ側が「結果ファイルの有無」を先に見る防御
+            // (IsPreviousUpdateFailed) が常に「無い」を観測し、旧 Updater 用のログ推測へ落ちる。
+            // すると Step 4 の best-effort な .bak 削除失敗 ([ERROR]) を拾って「前回のアップデートが
+            // 完了していません」を出す — 数秒前にこのダイアログが「✓ 完了」と言った同じ起動で。
+            //
+            // 削除は消費者 (UpdaterClient.HasUnresolvedFailure) に一本化する。タブが必ず起動時に
+            // 読むので、成功記録はこの直後に消える。仮にタブまで到達しなくても、成功記録が残って
+            // 害になることはない (Success=true は誤検知を生まない)。
 
             // CompletedAt は writer が ISO 8601 UTC で書き出した値 ("yyyy-MM-ddTHH:mm:ssZ")。dialog では
             // user-friendly な local time format に変換 ("yyyy-MM-dd HH:mm")。parse 失敗時は空文字で fallback、

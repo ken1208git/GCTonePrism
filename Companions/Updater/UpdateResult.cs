@@ -27,9 +27,9 @@ namespace TonePrism.Updater
     /// 成功はもう覚えておく必要が無いが、失敗は「アップデートタブの再試行ボタンを有効に戻す」ために
     /// 後で（別セッションでも）参照する必要があるため。したがって<b>平常時はこのファイルは存在しない</b>。
     ///
-    /// 残った失敗の記録は、実行中の Manager が `targetManagerVersion` に達していれば消費側が失効させる
-    /// （手動で <c>Install.bat</c> を実行して直した場合も自動で解消する = 時間ではなく事実で失効させる）。
-    /// 次の更新試行でも上書きされるので、いずれにせよ溜まらない。
+    /// 残った失敗の記録は**版数では失効しない**。**記録が消えるのは 3 経路だけ**: (1) 起動時に成功を確認したとき (2) 次の試行が上書きしたとき (3) `Install.bat` が掃除したとき。
+    /// （版数で失効させると、Manager の版数が変わらない Bundle リリースで即座に消え、起動時ダイアログが
+    ///  案内した再試行導線がその場で消える。）
     /// </summary>
     internal static class UpdateResult
     {
@@ -85,8 +85,8 @@ namespace TonePrism.Updater
 
         /// <summary>
         /// staging の Manager.exe から「この更新で入るはずだった版数」を読む。
-        /// 消費側はこれと実行中の Manager を比べ、追いついていれば失敗記録を失効させる。
-        /// 読めなければ null (失効判定なし = 次の更新で上書きされるまで残る)。
+        /// **現状 consumer は無い**（版数による自動失効を撤廃したため）。`.update_result` を人が読んで
+        /// 「どの版へ更新しようとして失敗したか」を知るための診断情報として残してある。読めなければ null。
         /// </summary>
         internal static string ReadStagingManagerVersion(string stagingDir)
         {

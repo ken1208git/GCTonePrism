@@ -194,7 +194,11 @@ namespace TonePrism.Manager.Services
             /// 化けてしまうので nullable にしてある。
             /// </summary>
             public int? ExitCode { get; set; }
-            /// <summary>この更新で入るはずだった Manager の FileVersion (読めなければ null)。</summary>
+            /// <summary>
+            /// この更新で入るはずだった Manager の FileVersion (読めなければ null)。
+            /// **判定には使っていない** — 版数による自動失効を撤廃したため consumer は無い。
+            /// `.update_result` を人が開いて「どの版へ更新しようとして失敗したか」を知るための診断情報。
+            /// </summary>
             public string TargetManagerVersion { get; set; }
 
             /// <summary>
@@ -222,9 +226,9 @@ namespace TonePrism.Manager.Services
             {
                 if (!File.Exists(UpdateResultPath)) return null;
                 string json = File.ReadAllText(UpdateResultPath, System.Text.Encoding.UTF8);
-                var dto = JsonCompat.Deserialize<UpdateRunResult>(json);
-                // (レビュー Medium) parse できても中身が空なら「読めなかった」と同じ扱いにする。
-                return dto;
+                // 空・欠落の正規化はここではしない。`ExitCode` が nullable なので
+                // 「値が無い」はそのまま null として消費側 (`Success` == null) に伝わる。
+                return JsonCompat.Deserialize<UpdateRunResult>(json);
             }
             catch (Exception ex)
             {
@@ -256,8 +260,7 @@ namespace TonePrism.Manager.Services
         /// (= #440 と同じ行き止まり)。申し送りを残す案は採らない — 手動で `Install.bat` から復旧しても
         /// 結果ファイルは生まれないため、直したのに永久に警告が出続けることになる。
         ///
-        /// 状態の置き場所を `.update_result` 1 つに保てば、`targetManagerVersion` に版数が追いついた
-        /// 時点で自動失効するので、手動復旧でも勝手に解消する。
+        /// 状態の置き場所を `.update_result` 1 つに保つ（失効条件は <see cref="HasUnresolvedFailure"/> を参照）。
         ///
         /// 終了コードは 1 (汎用エラー = 「内部エラー、ログを確認」) として記録する。Updater が実際の
         /// コードを残せなかった以上、原因は本当に分からない。
@@ -281,7 +284,8 @@ namespace TonePrism.Manager.Services
         }
 
         /// <summary>
-        /// (#440) 実行結果を消す。**成功を確認した時点で呼ぶ** — 成功はもう覚えておく必要が無い。
+        /// (#440) 実行結果を消す。**唯一の呼び出し元は <see cref="HasUnresolvedFailure"/> の成功経路**
+        /// (レビュー Medium-1 で消費者に一本化)。成功はもう覚えておく必要が無い。
         /// 失敗は残す (アップデートタブが再試行ボタンを有効に戻すために後で参照するため)。
         /// </summary>
         public static void ClearUpdateResult()
@@ -293,9 +297,10 @@ namespace TonePrism.Manager.Services
         /// <summary>
         /// (#440) 「前回のアップデートが未完了のまま残っているか」。
         ///
-        /// 残っている失敗記録が**まだ有効か**をここで判断する。実行中の Manager が
-        /// `TargetManagerVersion` に達していれば、その失敗は既に解消済み (手動で `Install.bat` を
-        /// 実行して直した場合など) なので記録を消して false を返す。**時間ではなく事実で失効させる。**
+        /// **失敗の記録が残っている限り true。版数による自動失効はしない。**
+        /// **記録が消えるのは 3 経路だけ**: (1) 起動時に成功を確認したとき (2) 次の試行が上書きしたとき (3) `Install.bat` が掃除したとき。
+        /// (版数で失効させると、Manager の版数が変わらない Bundle リリースで即座に消えてしまい、
+        ///  起動時ダイアログが案内した再試行導線がその場で消える。詳細は本体のコメント参照。)
         /// </summary>
         public static bool HasUnresolvedFailure()
         {
@@ -304,9 +309,11 @@ namespace TonePrism.Manager.Services
             if (!result.Success.HasValue)
             {
                 // ファイルはあるが値を読めない。ここで「失敗」と決めつけると偽の警告を出すので、
-                // 判定材料として使わず捨てる (呼び出し側は版数比較や従来の推測に倒れる)。
+                // 判定材料として使わず false を返す (呼び出し側は版数比較や従来の推測に倒れる)。
+                // (レビュー Medium-6) **消しはしない。** 消すと SPEC が宣言する 3 経路の外に
+                // 4 つ目の削除が生まれ、「記録がある限り再試行できる」不変条件が崩れる。
+                // 壊れた記録は次の試行が上書きするか Install.bat が掃除する。
                 Logger.Warn("[UpdaterClient] .update_result に終了コードがありません。判定材料として使いません");
-                ClearUpdateResult();
                 return false;
             }
             if (result.Success.Value)
