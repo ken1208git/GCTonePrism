@@ -327,16 +327,20 @@ namespace TonePrism.Manager
         }
 
         /// <summary>
-        /// (#449 診断) `MainForm_Load` が戻ったかを記録する。診断ログの読み取り可否判定にのみ使う。
-        /// `Load` イベントは designer 配線なので `base.OnLoad` が `MainForm_Load` を呼ぶ。
-        /// **本体は巨大で early return も複数あるため、メソッドを包まずここで `finally` を張る。**
+        /// (#449 診断) 物理表示の確定点。`ShowShellAsMain` が `MainForm_Load` の内側で呼ぶ `Hide()` が
+        /// 効いていれば**発火しない**ので、このログの有無だけで「Hide が Load 境界を越えて維持されるか」
+        /// が決まる。**結論が出たら削除してよい。**
         /// </summary>
-        private bool _loadReturned;
-
-        protected override void OnLoad(EventArgs e)
+        protected override void OnShown(EventArgs e)
         {
-            try { base.OnLoad(e); }
-            finally { _loadReturned = true; }
+            base.OnShown(e);
+            try
+            {
+                Logger.Info("[MainForm] (#449 診断) OnShown 発火 (= Hide は維持されなかった): Visible=" + Visible
+                    + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle))
+                    + " Opacity=" + Opacity + " ShowInTaskbar=" + ShowInTaskbar);
+            }
+            catch { /* 診断ログの失敗は無視 */ }
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -886,52 +890,29 @@ namespace TonePrism.Manager
                 // 再表示されるなら MainForm はタスクバーに残り、SPEC §3.8.2.1 の「起動後は Hide 済み」
                 // という前提と、H-1 の深刻度説明を訂正する必要がある。
                 // **結論が出たらこのログは削除してよい。**
-                // **1 本目も try/catch で包む (レビュー Low)。** ここは「以降は失敗してもフォールバック
-                // しない」の境界より上なので、一時的な診断コードで例外が出ると外側 catch に落ち、
-                // Hide 済みの状態で FallbackToVisibleMainForm (コメント自身が「死蔵になる」と書く経路) と
-                // ShellWindow.Instance = null が走り、可視シェルがあるのに owner に選ばれなくなる。
+                // (#449 診断) `Hide()` が `MainForm_Load` の境界を越えて維持されるかを実機で確定する。
+                // レビューでは複製アプリ 6 構成すべてで「post-Load に再表示される」と実測され、
+                // こちらの計測とは逆の結果になった。複製では決着しないので実アプリで測る。
+                //
+                // **判定は `OnShown` の発火有無で行う (レビュー 5b)。** `Shown` は**物理表示の確定点**
+                // なので、`Hide()` が効いていれば発火しない = 発火の有無そのものが答えになる。
+                // 旧実装は `BeginInvoke` + `_loadReturned` フラグだったが、`_loadReturned` は
+                // `OnLoad` から戻った時点で立つ一方 `SetVisibleCore` はその後に `ShowWindow` を呼ぶため、
+                // 「Load 完了後だが物理表示前」の窓が残り、早発火を閉じ切れていなかった。
+                //
+                // **結論が出たらこの 2 本のログは削除してよい。**
                 try
                 {
                     Logger.Info("[MainForm] (#449 診断) Hide 直後: Visible=" + Visible
                         + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle)));
                 }
                 catch { /* 診断ログの失敗は無視 */ }
-
-                // **早発火を機械的に捨てる (レビュー Medium)。** BeginInvoke はメッセージをポストする
-                // だけなので、Load から戻る前に誰かがポンプすると そこで dispatch される。
-                // 直後の StartBackgroundUpdateCheckIfDue は cache が温いと同期的に MessageBox へ入り、
-                // その modal loop が全スレッドメッセージをポンプする。その時点では SetVisibleCore が
-                // 再開しておらず ShowWindow も呼ばれていないので、**Hide の挙動と無関係に
-                // False/False が記録される** — しかも cache が温い起動こそ #449 の再現条件で、
-                // いちばん誤読しやすい形だった。`_loadReturned` を見て、早すぎる読みは捨てて再ポストする。
-                int probeRetries = 0;
-                Action probe = null;
-                probe = () =>
-                {
-                    try
-                    {
-                        if (!_loadReturned)
-                        {
-                            if (++probeRetries > 20)
-                            {
-                                Logger.Warn("[MainForm] (#449 診断) Load 完了を待てませんでした、計測を諦めます");
-                                return;
-                            }
-                            BeginInvoke(probe);
-                            return;
-                        }
-                        Logger.Info("[MainForm] (#449 診断) Load 完了後: Visible=" + Visible
-                            + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle))
-                            + " Opacity=" + Opacity
-                            + " ShowInTaskbar=" + ShowInTaskbar
-                            + " (再ポスト " + probeRetries + " 回)");
-                    }
-                    catch { /* 診断ログの失敗は無視 */ }
-                };
-                try { BeginInvoke(probe); } catch { /* 診断ログの失敗は無視 */ }
                 // (#246 / レビュー #4) ここから先 (前面化・ステータス反映) は **シェル表示済み** なので、失敗しても
-                // フォールバックせずログのみにする。理由: Hide() 後は外側 catch の Opacity=1 では可視化できず
-                // (Visible=false のまま) フォールバックが死蔵になる + シェルは既に出ているのでフォールバック不要。
+                // フォールバックせずログのみにする。理由: **シェルは既に表示済みなのでフォールバック不要**。
+                // (レビュー 8) 旧コメントは「Hide 後は Opacity=1 では可視化できず死蔵になる」と書いていたが、
+                // #449 で `MakeMainFormVisible` が無条件 `Show()` + `Activate()` に変わったため可視化は
+                // される。実際の帰結は「死蔵」ではなく**シェルと MainForm の二重 UI**であり、
+                // フォールバックしない理由はそちら。
                 // 外側 catch は「シェル生成 / Show 失敗 (= MainForm 未 Hide)」専用に限定する。
                 try
                 {
@@ -1106,9 +1087,18 @@ namespace TonePrism.Manager
             //     (= この MessageBox) まで辿れる。したがって自身が `ShowInTaskbar` でなくても戻せる。
             //     **将来 owned でない可視 Form が active な瞬間に呼ばれると、この根拠は崩れる。**
             //     その場合は `ShowInTaskbar` か owner 連鎖の確認を足すこと。
+            //     **自分で閉じる窓を owner にしない (レビュー 6)。** Win32 は owner 破棄時に所有窓を
+            //     道連れに破棄する。`ProcessingDialog` は worker 完了で**自分自身を閉じる**モーダルなので、
+            //     それを owner にすると確認ダイアログが勝手に消えて `MessageBox.Show` が Yes 以外を返す。
+            //     `MainForm_FormClosing` のバックアップ中止確認がこれに当たると `e.Cancel = true` になり、
+            //     シェルは既に閉じているので**窓が 1 つも無い Manager プロセスが生き残る** — #444 と
+            //     同じ「見えない Manager が更新を阻害する」状態を自分で作ることになる。
+            //     あわせて `Modal` も要求する（非モーダルの active Form は owner-modal の前提を満たさない）。
             Form active = Form.ActiveForm;
             if (active != null && active != this && !active.IsDisposed
-                && active.IsHandleCreated && NativeVisibility.IsWindowVisible(active.Handle))
+                && active.IsHandleCreated && active.Modal
+                && !(active is ProcessingDialog)
+                && NativeVisibility.IsWindowVisible(active.Handle))
             {
                 return active;
             }
@@ -1181,8 +1171,9 @@ namespace TonePrism.Manager
         ///
         /// **(#456) 「はい」を押しても現在はシェルが遷移しない。** 実装は `tabControl1.SelectedTab`
         /// = **`Hide()` 済みの MainForm** のタブ切替で、可視シェルは何も変わらない (#245 の置き去り経路)。
-        /// #449 の順序入替により「通知時点でシェルが必ず表示済み」が確定したため、**この不整合も
-        /// 常時発生するようになった** (従来は cache 冷時のみ)。修正は #456。
+        /// **#449 とは無関係に #245 以降ずっと壊れている** (レビュー 4) — 旧順序でも MainForm は
+        /// ユーザーに見える形で表示されないため、cache の温冷に関わらず「はい」の効果は見えなかった。
+        /// 唯一動くのはシェル生成失敗のフォールバック経路 (MainForm が可視でタブがある)。修正は #456。
         /// `Status=UpdateAvailable` の case でのみ呼ばれる (Skipped / UpToDate / 失敗時は呼ばれない、
         /// = 「スキップしたバージョンが新 release で更新されるまで再通知しない」semantic を上位で保証)。
         ///

@@ -1373,7 +1373,12 @@ Release.ps1 と一致 (caller CI は `%ERRORLEVEL%` で 4 通り区別):
 
 #### 3.8.2.1 モーダル owner 規約 (#449)
 
-**モーダルの owner に渡してよいのは「今この瞬間に表示されていて、タスクバーに出ている窓」だけ。MainForm を無条件に `this` で渡してはならない。**
+**モーダルの owner に渡してよいのは、次の 2 条件をともに満たす窓だけ。MainForm を無条件に `this` で渡してはならない。**
+
+1. **タスクバーから辿れること** — 物理的に表示済みで、自身または owner 連鎖の先がタスクバーに出ている
+2. **ユーザーが視認できること** — `Opacity > 0`
+
+条件 1 だけでは足りない（レビュー指摘）。`Opacity = 0` の窓はタスクバーボタンを持ちうるが、ユーザーには「押しても何も見えない」ので、モーダルの所在を伝える窓としては機能しない。実装 `VisibleModalOwnerOrNull` の `Opacity > 0` はこの条件 2 に対応する。
 
 ##### 機序
 
@@ -1383,7 +1388,7 @@ Manager の MainForm は WPF シェル移行 (#245) 後、ctor で `Opacity = 0`
 
 > **未決着 (#449)**: 「`ShowShellAsMain` の `Hide()` が `MainForm_Load` の境界を越えて維持されるか」は結論が出ていない。レビュー側は複製アプリ 6 構成（.NET FW 4.8 / net10、`Opacity` 有無、WPF 込みの構造複製）すべてで**post-Load に再表示される**（`Visible=True` / `IsWindowVisible=True`）と実測し、こちら側の計測（PowerShell ハーネス）は逆の結果だった。複製では決着しないため、`ShowShellAsMain` に診断ログを仕込んで**実機で確定させる**。ログの `LoadReturned=` が `False` の行は**判定に使わないこと** — `BeginInvoke` は `MainForm_Load` から戻る前でも、ネストしたメッセージポンプ（cache が温いときの通知 MessageBox 等）があれば dispatch される。その時点では `SetVisibleCore` が再開しておらず `ShowWindow` も呼ばれていないため、Hide の挙動と無関係に `False/False` が出る（実装側で再ポストして回避済み）。再表示されるなら MainForm はタスクバーに残るので、上記「起動後は Hide 済み」と、それを根拠にした深刻度の説明を訂正すること。
 >
-> なお**どちらに転んでも本規約と実装は成立する** — `VisibleModalOwnerOrNull` は `Opacity > 0` も条件にしているため、透明のまま再表示されていても MainForm は owner に選ばれない。
+> なお**どちらに転んでも本規約と実装は成立する** — 上記の条件 2 (`Opacity > 0`) により、透明のまま再表示されていても MainForm は owner に選ばれない。
 
 2026-09-04 の実害 (#449) は `MainForm_Load` が return する前 = **MainForm が一度も表示されていない状態**の窓を owner にしたことによる。起動スプラッシュ (#246) は `Topmost="False"` なので原因ではない。
 
@@ -1426,8 +1431,9 @@ after Show(): Visible=True  IsWindowVisible=True    ← 無条件 Show() なら�
 - `TryShowUpdateCompletedDialog`（✓ 完了 / ✗ 未完了 / 確認できません）
 - DB 初期化プロンプト ×2
 - `Program.cs` の起動エラー ×2
+- **同 PC 重複起動の modal**（`Program.cs`「Manager は 1 つだけ起動できます」）— `Application.Run` より前で**窓が 1 つも存在しない**ため `GetActiveWindow()` は必ず 0 に倒れ、top-level = 到達可能。**未解決ではなく「安全と確認済み」**（#444 でこの modal がプロセスを 2 分 42 秒生かして更新を阻害した実績があるが、それは到達可能性とは別の問題で #447）
 - **ログ保存先の移行通知 (#201)** — `this` 直渡しはやめたが、呼び出しがシェル生成前なので `VisibleModalOwnerOrNull()` は `null` を返す
-- **起動時のアップデート通知で「はい」を押してもシェルが遷移しない (#456)** — 実装が `Hide()` 済み MainForm のタブ切替のままで、#245 の置き去り経路。#449 の順序入替で「通知時点でシェルが必ず表示済み」が確定したため、**この不整合は常時発生するようになった**（従来は cache 冷時のみ）
+- **起動時のアップデート通知で「はい」を押してもシェルが遷移しない (#456)** — 実装が `Opacity = 0` / `Hide()` 済み MainForm のタブ切替のままで、#245 の置き去り経路。**本件は #449 とは無関係に #245 以降ずっと壊れている**（旧順序でも MainForm はユーザーに見える形で表示されないため、cache の温冷に関わらず「はい」の効果は見えなかった）。唯一動くのはシェル生成失敗のフォールバック経路（MainForm が可視でタブがある）
 - **バックアップ中止の終了確認** — シェルの `Closed` ハンドラが先に `Instance = null` を実行してから MainForm の `Close()` に入るため、`VisibleModalOwnerOrNull()` の step 2 は落ちる。step 1 (`Form.ActiveForm`) が拾える可能性はあるが、シェルが閉じた後なので保証はない
 
 #### 3.8.3 同 PC 重複起動 block (Named Mutex)
