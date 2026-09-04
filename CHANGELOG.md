@@ -2549,23 +2549,44 @@ PR #150 で dir rename (`GCTonePrism_Launcher/` → `Launcher/`) に連動して
 ### [Manager v0.34.3] - 2026-09-04
 
 - **起動時のダイアログが前面に戻せなくなり、起動スプラッシュのまま固まる問題を修正 (#449)**。仮想本番で 8 分間停止し、外部から Win32 API でダイアログを閉じるまで復帰しなかった。
-- **原因 (1): 不可視の窓を owner にしていた**。MainForm は WPF シェル移行後、ctor で `Opacity = 0` にされ（`MainForm_Load` の全区間で透明）、シェル表示後は `Hide()` される裏方になっている。**透明 / 非表示の窓を owner にすると、Windows の仕様で所有ダイアログはタスクバーボタンも Alt+Tab エントリも持たない。** 一度 z-order で下に潜ると、ユーザーが前面に戻す手段が一つも無くなる。なお起動スプラッシュは `Topmost="False"` なので**スプラッシュは原因ではない**（当初そう疑ったが誤り）。
-- **原因 (2): 通知がシェル可視化より先に走りうる**。`StartBackgroundUpdateCheckIfDue()` が `ShowShellAsMain()` より前に置かれていた。`UpdateChecker.CheckAsync` は cache が TTL 内なら HTTP を叩かず**完了済み Task** を返し、**完了済み Task の await は継続が同期実行される**ため、そのまま MessageBox に突入して呼び出しから戻らず、シェル可視化に永久に到達しない。cache が冷えていれば本物の HTTP で非同期になり戻ってくるので、**「ネットワークが遅いおかげで助かっている」**だけのタイミング依存だった。
-- **修正**: (a) `ShowShellAsMain()` を更新チェックより**前**へ移してタイミング依存を消す、(b) 起動経路のモーダル owner を `StartupDialogOwner()` に集約し、**可視シェルがあればそれを、無ければ owner なし**（所有されない dialog は top-level 窓になるのでタスクバー / Alt+Tab から必ず戻せる）に倒す。
-- **起動経路のダイアログを全数監査**し、同じ穴が空いていた 2 件も同時に修正した。
-  - **同時起動の競合ダイアログ (Startup)**: `SessionConflictDialog.Show(this, ...)` と不可視 MainForm を渡していた。同 dialog の docstring は「caller が owner を **visible 状態で**渡せば自然な owner-modal child 挙動になる」を API contract と明記しており、**契約違反**だった。なおこの dialog は残りの初期化を止める**ゲート**なので「シェルを先に出す」ことはできない（シェルはまだ無く、出せばゲートの意味が消える）。owner なしに倒すことで解決している。
-  - **ログ保存先の移行通知 (#201)**: 同じく `this` を渡していた。
-  - DB 初期化プロンプト ×2 / 更新の完了・未完了・確認不能 ×3 / `Program.cs` の起動エラー ×2 は**元から owner なし**で問題なし。**だから今まで表面化していなかった**。
-  - 起動失敗フォールバック (`FallbackToVisibleMainForm`) は `this` のままで正しい — スプラッシュを閉じ `Opacity = 1` + `Show()` してから出しており、契約を満たしている。
-- **維持すべき不変条件**: 起動経路のモーダルに渡す owner は**「可視の窓」か `null` のどちらかだけ**。不可視の窓は渡さない。
-- 通知マーカー (`update_notified_tag`) は MessageBox が正常に閉じたときだけ記録されるため、**タスクマネージャーで kill しても逃げられず次回起動でも同じ場所で止まる**という性質があった。本修正でその入口ごと塞がる。
-- **レビュー対応 (H-2 / M-6): `null` を「owner なし」と思い込んでいたのを訂正**。WinForms の `MessageBox.Show` は owner が `null` のとき**呼び出しスレッドの `GetActiveWindow()` を owner に代入する**ため、`null` を渡しても不可視の MainForm が owner に戻りうる。特に同時起動の競合ダイアログは MainForm の Show 完了後に走る設計なので、`null` 化だけでは**修正が no-op になりうる**状態だった。当該ゲートは `MakeMainFormVisible()` で**可視 owner を作ってから**出すよう変更。
-- **レビュー対応 (M-6): 機序の説明を訂正**。「透明 / 非表示の窓を owner にすると所有ダイアログがタスクバーに出ない」は誤り。所有ダイアログが自前のタスクバーボタンを持たないのは **owned であること自体**が理由で、**決定的なのは owner 自身がタスクバーに出ているか**。#449 の実害は「透明だから」ではなく「**`MainForm_Load` が return する前＝一度も表示されていない窓**を owner にしたから」。この誤解のまま規約化すると、将来「可視だが `ShowInTaskbar=false` の窓」で同じ穴が開く。
-- **レビュー対応 (H-1): 起動後の経路にも同じ穴が空いていた**のを修正。シェル表示後は MainForm が `Hide()` 済みなので、`CheckSessionConflictBeforeWrite`（編集操作前の競合警告）/ 他 PC 復元中の警告 / バックアップ中の終了確認の 3 箇所が**恒久的に契約違反**だった。しかも `ShellOwner` の docstring が「隠し MainForm を owner にすると可視シェルが無効化されず擬似モーダルになる」とこの経路を名指しで否定していた ―― **「データが破損する恐れ」の警告中にシェルを操作できる再入**が起きる。起動時ゲートより発火頻度が高い（別 Manager 稼働中なら書込操作のたび）。
-- **レビュー対応 (M-3): 死んだシェルを owner に返しうる**のを修正。`ShellWindow.Instance` は ctor で代入され `Closed` でしか消えないため、`Show()` が HWND 生成後に失敗すると「表示されていないシェル」が残る。`IsVisible` チェックの追加と、生成失敗時の `Instance = null` 掃除で二重に閉じた。
-- **レビュー対応 (M-4)**: 新メソッドを既存 docstring と既存メソッドの間に挿入してしまい、`ShowUpdateAvailableNotification` の**戻り値契約（`MarkNotified` を呼ぶか決める重要仕様）が別メソッドに付いていた**のを是正。
-- **レビュー対応 (M-5)**: `#186 round 3` の「MainForm を owner にすれば taskbar entry あり」というコメントが #245 で失効していたのに残置され、新しい規約と正面から矛盾していたのを上書き。
-- **レビュー対応 (L-7)**: ヘルパー名を `StartupDialogOwner` → `VisibleModalOwner` に変更（起動限定ではなく全経路で使うため）。
+
+**原因 (1): owner がタスクバーに出ていない窓だった**
+
+所有ダイアログが自前のタスクバーボタンを持たないのは **owned であること自体**が理由で、owner の透明度とは関係ない。決定的なのは **owner 自身がタスクバーに出ているか** — タスクバーは `GetLastActivePopup` 経由で所有モーダルを前面化するので、owner がタスクバーに居れば戻せる。逆に「**まだ表示されていない窓**」「`Hide()` 済みの窓」を owner にすると戻す導線が消える。
+
+Manager の MainForm は WPF シェル移行 (#245) 後、`Opacity = 0` で起動し `ShowShellAsMain` で `Hide()` される裏方窓になった。#449 の実害は `MainForm_Load` が return する前＝**一度も表示されていない窓**を owner にしたことによる。起動スプラッシュ (#246) は `Topmost="False"` なので原因ではない。
+
+**原因 (2): 通知がシェル可視化より先に走りうる**
+
+`StartBackgroundUpdateCheckIfDue()` が `ShowShellAsMain()` より前にあった。`UpdateChecker.CheckAsync` は cache が TTL 内なら HTTP を叩かず**完了済み Task** を返し、**完了済み Task の await は継続が同期実行される**ため、そのまま MessageBox に突入して呼び出しから戻らず、シェル可視化に永久に到達しない。cache が冷えていれば本物の HTTP で非同期になり戻ってくるので、**「ネットワークが遅いおかげで助かっている」**だけのタイミング依存だった。
+
+**修正**
+
+- `ShowShellAsMain()` を更新チェックより**前**へ移し、タイミング依存を消す
+- モーダル owner を `VisibleModalOwner()` に集約。**今アクティブな可視モーダル → 可視シェル → 物理表示されている MainForm → `null`** の順に返す
+  - **可視判定に `Control.Visible` を使わない**。WinForms は最初の物理表示より前 (= `Form_Load` 実行中) でも `Visible == true` を返す（実測確認）。`Visible` を根拠にすると「一度も表示されていない窓」を可視と誤認し、#449 をそのまま再生産する。Win32 の `IsWindowVisible` で判定する
+  - **アクティブな可視モーダルを最優先する理由**: ゲーム追加 / 編集フォームは `ShowDialog(shellOwner)` で開かれ、その間シェル HWND は `EnableWindow(false)` されている。内側から出すモーダルの owner をシェルにすると、**Win32 の MessageBox は破棄時に owner を `EnableWindow(true)` するため、閉じた瞬間にシェルが再有効化され、編集フォームが開いたままシェルを操作できてしまう**（別種の再入）
+- `MakeMainFormVisible()`: **`if (!Visible)` でガードせず無条件に `Show()` + `Activate()`**（ガードすると Load 中は skip されて表示されない。実測で無条件 Show なら `IsWindowVisible=True` になることを確認）
+- `ShellWindow.Instance` は ctor で代入され `Closed` でしか消えないため、`Show()` が HWND 生成後に失敗すると「表示されていないシェル」が残る。`IsVisible` チェックと、生成失敗時の `Instance = null` 掃除で二重に閉じた
+
+**`null` は「owner なし」ではない**
+
+WinForms の `MessageBox.Show` は owner が `null` のとき**呼び出しスレッドの `GetActiveWindow()` を owner に代入する**。したがって `null` を渡しても不可視の窓が owner に戻りうる。**`null` は「これ以上できることが無い」の意で、到達可能性の保証ではない。** 確実に戻せる必要があるゲート dialog は `MakeMainFormVisible()` で可視 owner を作ってから出す。この訂正に伴い、「owner なしオーバーロードに分岐する」意味のない三項も畳んだ。
+
+**起動経路のダイアログを全数監査した**
+
+同じ穴が空いていた箇所を修正:
+
+- **同時起動の競合 (Startup)**: 不可視 MainForm を渡していた（`SessionConflictDialog` の docstring が「owner を **visible 状態で**渡せば」を API contract と明記しており契約違反）。**この dialog は「シェルを先に出す」解決が取れない** — 残りの初期化を止めるゲートであり、シェルはまだ存在せず、出せばゲートの意味が消える。可視 owner を作ってから出す形にした
+- **同時起動の競合 (EditOperation) / 他 PC 復元中の警告 / バックアップ中の終了確認**: シェル表示後は MainForm が `Hide()` 済みで**恒久的に契約違反**だった。`ShellOwner` の docstring が「隠し MainForm を owner にすると可視シェルが無効化されず擬似モーダルになる」とこの経路を名指しで否定していた。起動時ゲートより発火頻度が高い（別 Manager 稼働中なら書込操作のたび）
+- **ログ保存先の移行通知 (#201)**: `this` 直渡しをやめた。ただしこの経路はシェル生成前なので実効は `null`（= `GetActiveWindow()` 依存）で、下記「未解決」と同じ状態
+- DB 初期化プロンプト ×2 / 更新の完了・未完了・確認不能 ×3 / `Program.cs` の起動エラー ×2 は**元から owner を渡していない**。**だから表面化していなかった** — ただし上記のとおり `null` は保証ではないので「未解決」として扱う
+- 起動失敗フォールバック (`FallbackToVisibleMainForm`) は可視化してから `this` を渡すので規約を満たす（例外ではなく適用例）
+
+**付随して分かったこと**
+
+通知マーカー (`update_notified_tag`) は MessageBox が正常に閉じたときだけ記録される。つまりタスクマネージャーで kill すると**次回起動でも同じ場所で止まる無限ループ**になる。本修正で入口ごと塞がる。
+
 - bump 判断: bugfix のみ。**patch（v0.34.2 → v0.34.3）**。
 
 ### [Manager v0.34.2] - 2026-09-04

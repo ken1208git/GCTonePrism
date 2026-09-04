@@ -40,10 +40,12 @@ namespace TonePrism.Manager.Services
         /// 渡す。SPEC §3.8.7.4 参照。
         /// </summary>
         /// <param name="owner">
-        /// 親 form (modal の親)。**可視の窓か <c>null</c> のどちらかを渡すこと (#449)。**
-        /// 不可視の窓 (Opacity=0 / Hide 済の MainForm 等) を渡すと、所有ダイアログはタスクバー
-        /// ボタンも Alt+Tab エントリも持たないため、z-order で下に潜ると前面に戻せなくなる。
-        /// <c>null</c> なら top-level 窓になり必ず戻せる。
+        /// 親 form (modal の親)。**物理的に表示されていてタスクバーに出ている窓か <c>null</c> を渡すこと (#449)。**
+        /// 「まだ表示されていない窓」「<c>Hide()</c> 済みの窓」を渡すと、タスクバーから所有モーダルを
+        /// 前面化する導線 (`GetLastActivePopup`) が無くなり、z-order で下に潜ると戻せなくなる。
+        /// **<c>null</c> は「owner なし」ではない** — WinForms は `GetActiveWindow()` を owner に代入する
+        /// ため到達可能性の保証にはならない。確実に戻せる必要がある場面は、呼び出し側が可視 owner を
+        /// 用意してから渡すこと (`MainForm.MakeMainFormVisible`)。
         /// </param>
         /// <param name="context">context (Startup / EditOperation) で文言切替。</param>
         /// <param name="managerOthers">検出した他 PC Manager session list (= self 除外、`ManagerSessionService.DetectOtherActiveSessions` の戻り値)。空 list 可、ただし `launcherOthers` と合算で 1 件以上が caller 契約。</param>

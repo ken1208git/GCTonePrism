@@ -551,6 +551,13 @@ namespace TonePrism.Manager
                         // ここは**残りの初期化を止めるゲート**で、ユーザーが答えるまで先に進めない。
                         // 見失うと詰むので、**可視 owner を作ってから**出す。OK なら後続の
                         // ShowShellAsMain が MainForm を Hide してシェルに移るので、可視化は一時的。
+                        //
+                        // (レビュー Medium) `MakeMainFormVisible` はスプラッシュも閉じる。OK 後の
+                        // `ContinueLoadAfterSessionCheck` (パネル初期化 / LoadGames、SMB 越しで数秒)
+                        // の間、進捗表示が消えて未初期化の旧 UI だけが見える状態になるのは #246 が
+                        // 埋めた穴の再発。**別 issue で「ゲート中はスプラッシュを維持する」に分離する**
+                        // — ここで対処すると可視化とスプラッシュ制御を切り離す設計変更になり、
+                        // 本 PR (到達可能性の修正) のスコープを超えるため。
                         MakeMainFormVisible();
                         var dialogResult = SessionConflictDialog.Show(
                             VisibleModalOwner(), SessionConflictDialogContext.Startup,
@@ -1009,6 +1016,19 @@ namespace TonePrism.Manager
         /// </summary>
         private IWin32Window VisibleModalOwner()
         {
+            // [0] **今アクティブな可視モーダルがあればそれを最優先 (レビュー High-2)。**
+            //     ゲーム追加 / 編集フォームは `ShowDialog(ShellOwner.For(shell))` で開かれ、その間
+            //     シェル HWND は `EnableWindow(false)` されている。その内側から出すモーダルの owner を
+            //     シェルにすると、**Win32 の MessageBox は破棄時に owner を EnableWindow(true) するため、
+            //     競合ダイアログを閉じた瞬間にシェルが再有効化され、編集フォームが開いたままシェルを
+            //     操作できてしまう**(別種の再入)。内側のモーダルを owner にすればこの入れ子が壊れない。
+            Form active = Form.ActiveForm;
+            if (active != null && active != this && !active.IsDisposed
+                && active.IsHandleCreated && NativeVisibility.IsWindowVisible(active.Handle))
+            {
+                return active;
+            }
+
             // [1] 可視シェル。WPF Window は既定で ShowInTaskbar=true なので戻す導線がある。
             //     **`IsVisible` を必ず見る (レビュー M-3)** — `ShellWindow.Instance` は ctor で
             //     代入され `Closed` でしか消えないため、`shell.Show()` が HWND 生成後に失敗すると
@@ -1020,12 +1040,32 @@ namespace TonePrism.Manager
                 if (shellOwner != null) return shellOwner;
             }
 
-            // [2] MainForm が実際に表示されているならそれ (= FallbackToVisibleMainForm 後の degraded 経路)。
-            //     `Opacity > 0` も見る — 起動中の裏方状態 (Opacity=0) を弾くため。
-            if (!IsDisposed && Visible && Opacity > 0) return this;
+            // [2] MainForm が **物理的に表示されている**ならそれ (= MakeMainFormVisible 後の degraded 経路)。
+            //
+            //     **`Visible` を信用しない (レビュー High-1)。** WinForms は最初の物理表示より前
+            //     (= `Form_Load` 実行中) でも `Visible == true` を返す。実測:
+            //         in Load : Visible=True  IsWindowVisible=False
+            //     ここで `Visible` を可視の根拠にすると「一度も表示されていない窓」を owner として返し、
+            //     #449 の実害そのものを再生産する。Win32 の `IsWindowVisible` で実表示を確かめる。
+            if (!IsDisposed && IsHandleCreated && NativeVisibility.IsWindowVisible(Handle) && Opacity > 0)
+            {
+                return this;
+            }
 
             // [3] 該当なし。呼び出し側が到達可能性を要求するなら MakeMainFormVisible を先に呼ぶこと。
             return null;
+        }
+
+        /// <summary>
+        /// (#449) 窓が**物理的に表示されているか**を Win32 で確かめる。
+        /// WinForms の `Control.Visible` は最初の物理表示より前 (= `Form_Load` 実行中) でも true を
+        /// 返すため、owner の適格判定には使えない (レビュー High-1、実測で確認)。
+        /// </summary>
+        private static class NativeVisibility
+        {
+            [System.Runtime.InteropServices.DllImport("user32.dll")]
+            [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+            internal static extern bool IsWindowVisible(IntPtr hWnd);
         }
 
         /// <summary>
@@ -1036,7 +1076,20 @@ namespace TonePrism.Manager
         private void MakeMainFormVisible()
         {
             try { Shell.SplashScreenHost.Close(); } catch { }
-            try { this.Opacity = 1; if (!Visible) Show(); } catch { }
+            try
+            {
+                this.Opacity = 1;
+                // **`if (!Visible)` でガードしない (レビュー High-1)。** WinForms は最初の物理表示より前
+                // (= `Form_Load` 実行中) でも `Visible == true` を返すため、ガードすると `Show()` が
+                // skip されて**窓は表示されないまま**になる。実測:
+                //     in Load     : Visible=True IsWindowVisible=False
+                //     after Show(): Visible=True IsWindowVisible=True   ← 無条件 Show なら表示される
+                Show();
+                // スプラッシュ (別 STA スレッド) がフォアグラウンドを握っていると Show だけでは前面に
+                // 来ないため、ShowShellAsMain と同じく明示的に前へ出す。
+                Activate();
+            }
+            catch { }
         }
 
         /// <summary>
@@ -1082,22 +1135,18 @@ namespace TonePrism.Manager
             DialogResult dr;
             try
             {
-                // **不可視の MainForm を owner にしない (#449)。**
-                // MainForm は ctor で `Opacity = 0` にしてあり、シェル表示後は `Hide()` される。
-                // 透明 / 非表示の窓を owner にすると、Windows の仕様で **所有ダイアログはタスクバー
-                // ボタンも Alt+Tab エントリも持たない**。つまり一度 z-order で他の窓の下に潜ると
-                // ユーザーが前面に戻す手段が無くなり、「スプラッシュから進まない・閉じられない」に見える
-                // (実際に仮想本番で発生し、Win32 API で外から閉じるしかなかった)。
+                // **裏方の MainForm を owner にしない (#449)。** 決定的なのは owner の透明度ではなく
+                // **owner 自身がタスクバーに出ているか** — タスクバーは `GetLastActivePopup` 経由で
+                // 所有モーダルを前面化するので、owner がタスクバーに居れば戻せる。逆に「まだ表示されて
+                // いない窓」「`Hide()` 済みの窓」を owner にすると戻す導線が消える (詳細は
+                // <see cref="VisibleModalOwner"/> / SPEC §3.8.2.1)。
                 //
-                // 可視シェルがあればそれを owner にする (シェルに対して正しくモーダルになる)。
-                // まだ無ければ **owner なし** で出す — 所有されない dialog は top-level 窓になるので
-                // タスクバー / Alt+Tab から必ず戻ってこられる。
-                IWin32Window owner = VisibleModalOwner();
-                dr = owner != null
-                    ? MessageBox.Show(owner, message, "アップデートの通知",
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1)
-                    : MessageBox.Show(message, "アップデートの通知",
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1);
+                // owner が null のときの `MessageBox.Show` は **owner なしではなく `GetActiveWindow()`
+                // に倒れる** (レビュー H-2)。したがって三項で「owner なしオーバーロード」に分岐しても
+                // 挙動は同じなので畳んである。null は「これ以上できることが無い」の意で、到達可能性の
+                // 保証ではない。
+                dr = MessageBox.Show(VisibleModalOwner(), message, "アップデートの通知",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1);
             }
             catch (Exception ex)
             {

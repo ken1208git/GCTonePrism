@@ -1400,9 +1400,26 @@ WinForms の `MessageBox.Show` / `Form.ShowDialog` は **owner が `null` のと
 - `FallbackToVisibleMainForm` は可視化してから `this` を渡すので規約を満たす（例外ではなく、規約の適用例）
 - **MainForm 撤去時の注意**: 本規約自体は MainForm 非依存なのでそのまま生きる（むしろシェルが起動当初から存在するので常に可視 owner が取れる）。ただし `FallbackToVisibleMainForm` は退避先が MainForm 自身なので代替が必要。詳細は #245
 
-##### 未解決
+##### 判定に `Control.Visible` を使わない
 
-`TryShowUpdateCompletedDialog` / DB 初期化プロンプト / `Program.cs` の起動エラーは owner を渡していない。これらは `MainForm_Load` が return する前 = MainForm がまだ active window になっていない時点で出るため、実測では `GetActiveWindow()` が 0 に倒れて top-level 窓になっている。**ただしこれは保証ではない**（上記のとおり `null` は owner なしを意味しない）。実機確認の対象。
+WinForms は**最初の物理表示より前 (= `Form_Load` 実行中) でも `Visible == true` を返す**。実測:
+
+```
+in Load     : Visible=True  IsWindowVisible=False   ← Visible が嘘をつく
+after Show(): Visible=True  IsWindowVisible=True    ← 無条件 Show() なら表示される
+```
+
+したがって `Visible` を可視の根拠にすると「一度も表示されていない窓」を owner に選んでしまう。判定は Win32 の `IsWindowVisible` で行い、`MakeMainFormVisible` も `if (!Visible)` でガードしない（ガードすると Load 中は `Show()` が skip されて表示されない）。
+
+##### 未解決（実機確認の対象）
+
+以下は owner を渡していない（= 実効 `null`）。`MainForm_Load` が return する前で MainForm がまだ active window になっていない時点で出るため、実測では `GetActiveWindow()` が 0 に倒れて top-level 窓になる。**ただしこれは保証ではない。**
+
+- `TryShowUpdateCompletedDialog`（✓ 完了 / ✗ 未完了 / 確認できません）
+- DB 初期化プロンプト ×2
+- `Program.cs` の起動エラー ×2
+- **ログ保存先の移行通知 (#201)** — `this` 直渡しはやめたが、呼び出しがシェル生成前なので `VisibleModalOwner()` は必ず `null` を返す
+- **バックアップ中止の終了確認** — シェルの `Closed` ハンドラが先に `Instance = null` を実行してから MainForm の `Close()` に入るため、`FormClosing` の時点で `VisibleModalOwner()` は `null`
 
 #### 3.8.3 同 PC 重複起動 block (Named Mutex)
 
