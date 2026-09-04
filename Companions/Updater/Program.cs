@@ -33,10 +33,15 @@ namespace TonePrism.Updater
     ///   4 = ファイル置換失敗 (rollback 実施済、旧 Manager 復元)。auto-recovery 経路 (Codex round 2 P1 #3) も同 code
     ///   5 = rollback も失敗した致命的状態 (手動復旧必要、`.bak` から手動 rename)。新 Manager 起動失敗時の
     ///       RollbackFromBak も失敗した case を含む (round 6 Codex P1)
-    ///   6 = 新 Manager.exe 起動失敗 (Process.Start null/throw、restart-exe 不在、spawn 直後 early-crash 等。
+    ///   6 = 新 Manager.exe 起動失敗、または **置換後の版数が持ち込んだものと不一致** (#440)
+    ///       (Process.Start null/throw、restart-exe 不在、spawn 直後 early-crash、版数不一致。
     ///       round 6 Codex P1 + Medium-5 で失敗時に RollbackFromBak で旧 Manager 復元)
     ///   7 = force-kill 試行 bounded retry (3 回) 超過 (permission denied 等の構造的問題、機械的再試行は無意味)
     ///   8 = process enumeration 連続失敗 (5 回、IPC/WMI 一時障害、短時間後の再試行に意味あり)
+    ///   9 = Manager プロセスの同一性を確認できないまま上限 (45 秒) に達した (#440)。
+    ///       **exit 3 と分けてある**: 3 の推奨アクションは「強制終了して再試行」だが、この経路は
+    ///       同一性未確認のプロセスを kill しない方針なので、案内どおり操作すると同じところに戻る
+    ///       行き止まりループになる。9 は「手動で Manager を閉じてから再試行」に倒す
     /// </summary>
     internal static class Program
     {
@@ -81,7 +86,7 @@ namespace TonePrism.Updater
                 // `SecurityException` / `UnauthorizedAccessException` / `IOException` 等の権限・環境
                 // 問題、または .NET runtime 内部の予期しない例外) を明示的に exit 1 (documented
                 // exit codes) に倒す。旧実装は本 catch が無く CLR 既定の uncaught exception で
-                // 異常終了 → Manager UI Phase 4 の retry/diagnostic 分岐が documented 0-8 と乖離した
+                // 異常終了 → Manager UI Phase 4 の retry/diagnostic 分岐が documented 0-9 と乖離した
                 // 予期しない exit code を受ける silent danger があった。Logger 未初期化なので stack
                 // trace はログファイルに残らず stderr のみ (SPEC §3.7.4 「exit 2 / 1 (parse 段階)
                 // はログファイル不在」規約、round 6 Medium-4)。
@@ -111,11 +116,13 @@ namespace TonePrism.Updater
                     logDir = Path.Combine(managerParent, "logs", "updater");
                 }
             }
-            Logger.Initialize(logDir);
-
-            int exitCode;
+            // finally で結果を書き出すため初期値が要る (Run が例外で抜けた場合も 1 = 汎用エラーとして残る)。
+            int exitCode = 1;
             try
             {
+                // (#440) Logger.Initialize も try の中に入れる。ここで throw すると (log dir の権限問題等)
+                // finally を通らず実行結果が残らない = Manager 側から「何も起きなかった」ように見えてしまう。
+                Logger.Initialize(logDir);
                 exitCode = Run(parsed);
             }
             catch (Exception ex)
@@ -125,6 +132,17 @@ namespace TonePrism.Updater
             }
             finally
             {
+                // (#440) 終了コードを消えない場所に残す。Manager は Updater の終了を待てない
+                // (待つと dir を置換できない) ため、これが無いとログ解析で推測するしかなくなる。
+                // Logger.Shutdown より前に呼ぶ (書き出し結果自体もログに残したいため)。
+                //
+                // **書き出せない経路が 3 つある**: `--help` (exit 0) / 引数 parse 失敗 (exit 2) /
+                // parse 中の予期しない例外 (exit 1)。いずれも本 try より前に return しており、そもそも
+                // `--manager-target` が読めていないので**書き込み先が決まらない**。
+                // ただしその 3 つは Manager 側が渡す引数の不具合であり、かつ Manager dir は一切
+                // 触られていないため、起動側の版数比較 (期待版数 != 実行中版数) が失敗を捉える
+                // (原因欄が「原因不明」になるだけ)。判定が漏れることはない。
+                UpdateResult.Write(parsed.ManagerTargetDir, parsed.StagingDir, exitCode);
                 Logger.Shutdown();
             }
             return exitCode;
@@ -164,6 +182,16 @@ namespace TonePrism.Updater
                 case WaitResult.ForceKillExhausted:
                     Logger.Error("force-kill 試行が bounded retry 上限に達して abort。permission denied 等の構造的問題、機械的再試行では解決しません。");
                     return 7;
+                case WaitResult.UnidentifiableTimeout:
+                    // (#440) 生きているが同一性を確認できない Manager。「終了済みと誤判定して置換に進む」
+                    // (静かなデータ不整合) と「永久に待つ」(管理ソフトが消えたまま戻らない) の両方を避け、
+                    // Manager dir に触らずに降りる。
+                    //
+                    // **exit 3 は使わない。** 3 の推奨アクションは「強制終了して再試行」だが、この経路は
+                    // 同一性を確認できないプロセスを kill しない方針なので、強制終了で再試行しても同じ
+                    // ところに戻る行き止まりループになる。専用の exit 9 (手動で閉じてから再試行) に分ける。
+                    Logger.Error("Manager プロセスの同一性を確認できませんでした。データを壊さないため置換を中止します。管理ソフトを手動で閉じてから、もう一度お試しください。");
+                    return 9;
                 case WaitResult.EnumerationFailed:
                     Logger.Error("process enumeration が連続失敗で abort。IPC/WMI 一時不調の可能性、短時間後の再試行で回復するケースあり。");
                     return 8;
@@ -216,6 +244,51 @@ namespace TonePrism.Updater
                 return 6;
             }
 
+            // (#440) **置換が本当に効いたかを、置換した本人がここで確かめる。**
+            //
+            // 直前の check は「起動対象 exe が存在するか」だけで、**中身が古いままでも通る**。
+            // 「持ち込んだ版数」は期待でしかなく、それだけを根拠にしても成功したかは分からない。
+            // 実際に本体フォルダに入っている版数を読んで、持ち込んだものと一致するかを見る。
+            // これが本当の意味での成否判定で、置換直後のここが一番確実に見られる場所。
+            //
+            // 両方読めたときだけ判定する。片方でも読めない場合は「検証できなかった」であって
+            // 「失敗した」ではないので、警告に留めて続行する (正常な更新を巻き戻さない)。
+            string stagedVer = UpdateResult.ReadStagingManagerVersion(args.StagingDir);
+            string installedVer = null;
+            try
+            {
+                installedVer = FileVersionInfo.GetVersionInfo(args.RestartExe).FileVersion;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"置換後の Manager 版数を読めませんでした (検証 skip): {ex.GetType().Name}: {ex.Message}");
+            }
+            if (!string.IsNullOrEmpty(stagedVer) && !string.IsNullOrEmpty(installedVer))
+            {
+                if (!string.Equals(stagedVer, installedVer, StringComparison.OrdinalIgnoreCase))
+                {
+                    Logger.Error($"置換後の Manager が持ち込んだものと違います (本体 v{installedVer} / 持ち込み v{stagedVer})。"
+                        + " ファイルが実際には置き換わっていません");
+                    Logger.Warn("旧 Manager を .bak から復元します...");
+                    try
+                    {
+                        FileReplacer.RollbackFromBak(args.ManagerTargetDir);
+                    }
+                    catch (InvalidOperationException rbEx)
+                    {
+                        Logger.Error("FATAL: 版数検証失敗後の rollback も失敗", rbEx);
+                        return 5;
+                    }
+                    Logger.Warn("旧 Manager 復元完了。もう一度アップデートを実行してください。");
+                    return 6;
+                }
+                Logger.Info($"置換後の Manager 版数を確認: v{installedVer} (持ち込みと一致)");
+            }
+            else
+            {
+                Logger.Warn("Manager 版数を検証できませんでした (staging か本体の版数が読めない)。置換自体は成功として続行します");
+            }
+
             // round 6 Codex P1 + Medium-5 対応: `.bak` 削除は **新 Manager.exe の起動成功確認後** に
             // 移動 (旧実装は restart-exe 存在 check 後 / Process.Start 前で削除していたため、
             // Process.Start null/throw or spawn 直後 early-crash の各 path で「旧 Manager 消失 +
@@ -246,6 +319,19 @@ namespace TonePrism.Updater
             //       (直接 spawn でも Manager.exe が requireAdministrator の場合 OS 既定の UAC prompt が
             //        出る仕組みは同じ、Manager は非 admin 前提も同じく維持)
             //     - Updater 完了が ~1.5 秒遅くなる (2000ms 待機)、ユーザー体験への影響は無視できる
+            // (#440 レビュー High-1) **新 Manager を起動する前に結果を確定させる。**
+            //
+            // 旧実装は Main の finally でしか書いていなかった。ところが finally が走るのは
+            // Step 3 (spawn + 2 秒の early-crash 待ち) と Step 4 (.bak 削除) の**後**で、
+            // 新 Manager は起動直後 (MainForm_Load のほぼ冒頭) に結果を読む。つまり速い PC では
+            // **成功した更新なのに「結果ファイルが無い」と読まれ、「✗ アップデート未完了」を出す**。
+            // 直そうとしているバグの符号が反転しただけの同型バグになる。
+            //
+            // ここまで来れば「置換は完了し、入っている版数も照合済み」= 成功は確定しているので、
+            // 読み手が現れる前に書いてしまう。Step 3/4 で失敗したら finally が正しい終了コードで
+            // 上書きする (成功のときだけ二重書き込みを抑止する)。
+            UpdateResult.Write(args.ManagerTargetDir, args.StagingDir, 0);
+
             Logger.Info("[Step 3/4] 新 Manager.exe を起動");
             try
             {

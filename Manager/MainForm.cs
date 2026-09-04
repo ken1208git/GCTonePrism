@@ -1247,16 +1247,34 @@ namespace TonePrism.Manager
         /// </summary>
         private void TryShowUpdateCompletedDialog()
         {
+            // (レビュー C-1) **起動時の consume はここで行う。** アップデートタブの Initialize は
+            // ContinueLoadAfterSessionCheck の中にあり、DB 初期化拒否や同時起動 Cancel では到達しない。
+            // そこに置くと成功記録が消えずに残り、残った exit 0 が後続の失敗を隠す
+            // (resultFileMissing が false になり updaterLeftNoTrace が発火しない)。
+            // 本メソッドは MainForm_Load 冒頭で、それらの early-return より先に走る。
+            //
+            // (レビュー Low-3) **consume は sentinel の有無より前**に置く。sentinel の書き込みは
+            // Logger.Warn で握り潰される (書けなくても installation 自体は完成しているため) ので、
+            // 「更新は成功したが sentinel が無い」起動が実在する。そこで consume を skip すると
+            // 成功記録が残り、C-1 で塞いだ「残った exit 0 が後続の失敗を隠す」経路が細く復活する。
+            var prevState = Services.UpdaterClient.ConsumePreviousRunState();
+
             string sentinelPath = System.IO.Path.Combine(PathManager.BaseDirectory, ".update_completed");
             if (!System.IO.File.Exists(sentinelPath)) return;
 
             string newVersion = null;
             string completedAtRaw = null;
+            string expectedManagerVersion = null;
             try
             {
                 string json = System.IO.File.ReadAllText(sentinelPath, System.Text.Encoding.UTF8);
                 var dto = Services.JsonCompat.Deserialize<UpdateCompletedSentinel>(json);
-                if (dto != null) { newVersion = dto.NewVersion; completedAtRaw = dto.CompletedAt; }
+                if (dto != null)
+                {
+                    newVersion = dto.NewVersion;
+                    completedAtRaw = dto.CompletedAt;
+                    expectedManagerVersion = dto.NewManagerVersion;
+                }
             }
             catch (Exception ex)
             {
@@ -1274,6 +1292,166 @@ namespace TonePrism.Manager
                 // parse 失敗 / newVersion 不在は dialog 出さず終了 (sentinel は finally で削除済)。
                 return;
             }
+
+            // (#440) **成功と言う前に、本当に置換されたかを確認する。**
+            //
+            // sentinel は Updater の spawn 成功後に書かれるだけで、spawn した Updater が**その後で**
+            // 失敗するケース (Manager dir の置換失敗) を見ていなかった。そのため置換に失敗した
+            // **古い Manager** が起動して「✓ アップデート完了 / 新しい管理ソフトが起動しています」と
+            // 表示していた。更新失敗に気付けるのはアップデートタブを開いて「前回のアップデート結果:
+            // 内部エラー」を読んだときだけで、実際 v0.9.0 以降 2 リリース分これで隠れていた (#440)。
+            //
+            // ここで比べるのは「入るはずだった Manager の版数」と「今動いている自分の版数」。
+            // 一致しなければ、何が原因であれ置換は完了していない。
+            // 判定は **2 つの材料の OR**。版数比較だけだと、Manager の版数が変わらない Bundle リリース
+            // (Launcher だけ上げた等) で置換に失敗しても expected == running になって成功扱いになる。
+            // 「一致しなければ失敗」は正しいが、その逆 (一致すれば成功) は成り立たない。
+            Version running = Services.VersionInventory.ReadManagerVersion();
+            Version expectedVer;
+            // **比較は 3-part に揃える。** running は AssemblyVersion、expected は apphost の
+            // FileVersion (= AssemblyFileVersion 由来) で **SoT が違う**。リリースゲート
+            // (Release.ps1 の Assert-PublishedManagerVersion) が一致を強制しているのも 3-part までで、
+            // revision だけ drift しても公開は通る。4-part で比べると、その場合に全ユーザーが
+            // 偽の「✗ アップデート未完了」を食らう。ゲートと同じ粒度にしておく。
+            // (レビュー C-2) `Version.TryParse` は 2 パート ("1.0") でも成功するが、`ToString(3)` は
+            // 要素数を超える fieldCount で ArgumentException を投げる。expectedManagerVersion は
+            // staging exe の VERSIONINFO 由来の**任意文字列**なので 2 パート値がありうる。
+            // ここで throw すると LoadCore の catch に拾われ、WPF シェルもタブ初期化も skip された
+            // degraded な旧 UI で起動する = 更新が成功していても起動体験が壊れる。
+            // parse できた上で **3 パート以上ある**ことまでを条件にする (Build < 0 が 3 パート未満)。
+            bool expectedParsed = Version.TryParse(expectedManagerVersion, out expectedVer)
+                && expectedVer.Build >= 0;
+            // (レビュー 5) parse 失敗は「不一致なし」に倒れる = 版数照合が丸ごと効かない。
+            // sentinel の newManagerVersion は FileVersionInfo.FileVersion 由来で、null や
+            // "0.34.1.0 (rel)" のような非 Version 文字列になりうる (staging の exe を直接読むこの経路には
+            // Release.ps1 の [version] 検証が効かない)。他の 2 レグが残るので silent pass にはならないが、
+            // 「照合が効いていない」ことが誰にも見えないのは駄目なので必ずログに残す。
+            if (!string.IsNullOrEmpty(expectedManagerVersion) && !expectedParsed)
+            {
+                Services.Logger.Warn("[MainForm] (#440) 申し送りの newManagerVersion を 3 パート以上の Version として"
+                    + " 解釈できません (版数照合を skip、終了コードと結果ファイルの有無で判定します): " + expectedManagerVersion);
+            }
+            bool versionMismatch = !string.IsNullOrEmpty(expectedManagerVersion)
+                && running != null
+                && expectedParsed
+                && running.ToString(3) != expectedVer.ToString(3);
+            // (#440) 一次情報は Updater が書き残した実行結果。無い場合 (旧 Updater) だけ、従来の
+            // ログ推測にフォールバックする。ログ推測は「末尾 20 行に [ERROR] があれば失敗」+「直近 2 分」
+            // というヒューリスティックで、文言依存で壊れるうえ失敗の翌朝には読めない。
+            int? exitCode = Services.UpdaterClient.PreviousRunExitCode
+                ?? Services.UpdaterClient.TryLoadLastExitCode();
+            // (レビュー Medium-1) **成功コードを「原因」として出さない。** 版数不一致だけで失敗と
+            // 判定した経路では exitCode が 0 のことがあり、そのまま埋めると
+            // 「アップデートに失敗しました … 原因: アップデート完了」という自己矛盾した文面になる。
+            string detail = "原因不明";
+            if (exitCode.HasValue)
+            {
+                Services.ExitCodeDispatch d = Services.UpdaterClient.DispatchExitCode(exitCode.Value);
+                detail = (d.Severity == Services.ExitSeverity.Success)
+                    ? "更新プログラムは成功と報告しましたが、置換が反映されていません"
+                    : d.Title;
+            }
+            bool exitFailed = (prevState == Services.UpdaterClient.PreviousRunState.Failed)
+                || (prevState != Services.UpdaterClient.PreviousRunState.Succeeded
+                    && exitCode.HasValue
+                    && Services.UpdaterClient.DispatchExitCode(exitCode.Value).Severity != Services.ExitSeverity.Success);
+
+            // (#440) **結果ファイルが「無い」ことも失敗の証拠になりうる。**
+            //
+            // ただし「無い」には (a) 一度も更新していない (b) 旧 Updater が動いた (c) Updater が
+            // finally に到達せず死んだ、が混ざっているので、無条件に失敗扱いすると通常起動のたびに
+            // 偽の警告が出る。切り分けるのは **申し送りに版数が入っているか**:
+            // `newManagerVersion` を書くのは #440 以降の Manager だけで、その世代なら Updater も
+            // 必ず結果を残す (書けない 3 経路は Manager dir に触れないので版数比較が拾う)。
+            // つまり「版数入りの申し送りがあるのに結果が無い」= Updater が痕跡を残さず終わった、と
+            // 特定できる。ここを見逃すと #440 と同じ「壊れているのに ✓ と言う」に戻る。
+            //
+            // v0.11.0 → v0.11.1 の 1 回だけは旧 Manager が申し送りを書く (版数なし) ため発火しない。
+            // (レビュー Medium) **「ファイルが無い」と「あるが読めない」を区別する。**
+            // どちらも TryLoadUpdateResult は null を返すが、意味は正反対 — 「無い」は
+            // Updater が痕跡を残さず終わった証拠になりうる一方、「読めない」は単に判定できないだけ。
+            // 混ぜると、成功した更新でファイルがロック / 破損していただけで偽の「✗ 未完了」を出す。
+            bool resultFileMissing = (prevState == Services.UpdaterClient.PreviousRunState.NoRecord);
+            bool updaterLeftNoTrace = !string.IsNullOrEmpty(expectedManagerVersion) && resultFileMissing;
+            if (updaterLeftNoTrace)
+            {
+                detail = "更新プログラムが結果を残さずに終了しました";
+            }
+
+            // (レビュー D-1) **「確かめられなかった」を「確かめて成功だった」と同じに扱わない。**
+            // 記録が破損している (File.WriteAllText は非アトミックなので停電・強制終了で torn write
+            // しうる) と、失敗の証拠は全部消える — ファイルは在るので updaterLeftNoTrace は発火せず、
+            // ログ推測も 2 分窓を過ぎれば何も返さず、Manager 版数が変わらない Bundle なら版数照合も
+            // 通る。そのまま「✓ 完了」を出すのは、本 PR がまさに直している silent pass そのもの。
+            bool resultUnreadable = (prevState == Services.UpdaterClient.PreviousRunState.Unreadable);
+
+            if (!versionMismatch && !exitFailed && !updaterLeftNoTrace && resultUnreadable)
+            {
+                Services.Logger.Warn("[MainForm] (#440) アップデートの結果を確認できません (.update_result が破損)");
+                MessageBox.Show(
+                    "アップデートの結果を確認できませんでした。\n\n"
+                        + "ゲームのデータは失われていません。そのままお使いいただけます。\n\n"
+                        + "「アップデート」タブでバージョンをご確認ください。\n"
+                        + "古いままだった場合は、もう一度アップデートをお試しください。",
+                    "アップデート結果を確認できません",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (versionMismatch || exitFailed || updaterLeftNoTrace)
+            {
+                Services.Logger.Error("[MainForm] (#440) アップデートが完了していません: 期待 Manager v"
+                    + (expectedManagerVersion ?? "(不明)") + " / 実際に起動しているのは v"
+                    + (running != null ? running.ToString() : "(不明)")
+                    + " / Updater 終了コード=" + (exitCode.HasValue ? exitCode.Value.ToString() : "(記録なし)"));
+
+                // (#440) Updater が結果を残していない場合は **ここで書く**。申し送りは読んだ時点で
+                // 必ず消える一度きりの通知なので、書かないと次回起動で判断材料が全部無くなり
+                // 「最新版を実行中」+ ボタン無効の袋小路に戻る (= #440 と同じ行き止まり)。
+                //
+                // 申し送りの方を残す案は採らない — 手動で Install.bat から復旧しても結果ファイルは
+                // 生まれないため、直したのに永久に警告が出続けることになる。状態の置き場所を
+                // .update_result 1 つに保つ (消えるのは成功確認 / 次の試行の上書き / Install.bat の掃除の 3 経路)。
+                //
+                // **期待版数が無いときは記録しない。** その場合の失敗判定はログ推測 (末尾 20 行の
+                // [ERROR]) 由来で当てにならず、当てにならない根拠で貼りつく状態を作るべきではない。
+                //
+                // (レビュー High-2) 条件は「記録が無い」ではなく「**失敗と判定したのに、失敗を示す
+                // 記録が残っていない**」。旧条件だと、版数照合だけで失敗を検出した (= Updater が
+                // exit 0 を書いたのに実際には置換が効いていない。Updater 側の版数検証は片方でも
+                // 版数を読めなければ警告に留めて続行するので実在する) ケースで証拠が一切残らず、
+                // しかも成功記録は consume 済みで消えている。次回起動では sentinel も記録も無く、
+                // CHANGELOG は新版数なので「最新版を実行中」+ ボタン無効 = #440 の症状に戻る。
+                if (prevState != Services.UpdaterClient.PreviousRunState.Failed
+                    && !string.IsNullOrEmpty(expectedManagerVersion))
+                {
+                    Services.UpdaterClient.RecordFailureWithoutUpdaterResult(expectedManagerVersion);
+                }
+
+                // 版数の行は **不一致のときだけ** 出す。判定は「版数の不一致 OR 終了コードの失敗」なので、
+                // 終了コードだけで失敗した経路では両者が同値になり「v0.34.1.0 / 本来は v0.34.1.0」という
+                // 不可解な表示になる (期待版数が読めなければ「本来は v不明」)。
+                string failBody = "アップデートに失敗しました。\n\n";
+                if (versionMismatch)
+                {
+                    failBody += "  管理ソフトが古いままです（v" + running + " / 本来は v" + expectedManagerVersion + "）\n";
+                }
+                failBody += "  原因: " + detail + "\n\n"
+                    + "ゲームのデータは失われていません。そのままお使いいただけます。\n\n"
+                    + "「アップデート」タブからもう一度お試しください。\n"
+                    + "それでも失敗する場合は、logs フォルダの中の記録ファイルを\n"
+                    + "そえて、開発者に連絡してください。";
+                MessageBox.Show(
+                    failBody,
+                    "✗ アップデート未完了",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+            // 成功記録の消費は、このメソッド冒頭の ConsumePreviousRunState で既に済んでいる
+            // (レビュー C-1 で、到達しない経路のあるタブ初期化からここへ移した)。
+            // 結果はプロセス内でキャッシュされるので、タブ側が後から読んでも同じ答えになる。
 
             // CompletedAt は writer が ISO 8601 UTC で書き出した値 ("yyyy-MM-ddTHH:mm:ssZ")。dialog では
             // user-friendly な local time format に変換 ("yyyy-MM-dd HH:mm")。parse 失敗時は空文字で fallback、
@@ -1420,6 +1598,12 @@ namespace TonePrism.Manager
             /// (camelCase、wire format) でも `CompletedAt` (PascalCase) でも互換的に受理。
             /// </summary>
             public string CompletedAt { get; set; }
+            /// <summary>
+            /// (#440) 置換後に起動しているはずの Manager の FileVersion (例: "0.34.0.0")。
+            /// 再起動した Manager が自分の assembly 版数と突き合わせて**本当に置換されたか**を確認する。
+            /// 旧 sentinel には無いので null 可 — その場合は検証を skip して従来どおり完了 dialog を出す。
+            /// </summary>
+            public string NewManagerVersion { get; set; }
             /// <summary>
             /// 新 Bundle バージョン (例: "0.3.2")。**Bundle 全体の version** (= GitHub Releases tag) で、
             /// Manager 単体 version (例: "0.9.2") ではない (writer 側 `targetVersion.ToString(3)` が

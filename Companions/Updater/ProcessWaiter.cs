@@ -21,6 +21,17 @@ namespace TonePrism.Updater
         ForceKillExhausted,
         /// <summary>process enumeration が MaxEnumerationFailures (5 回) 連続で throw (→ exit 8、IPC/WMI 一時障害、短時間後再試行に意味あり)。round 5 M-3 で「連続 N 回失敗の早期 abort path 専用」に限定、timeout 経路では使わない (両者排他)</summary>
         EnumerationFailed,
+        /// <summary>
+        /// (#440) Manager プロセスの**同一性を確認できない状態**が <see cref="UnidentifiedCapSeconds"/> 続いた
+        /// (→ **exit 9**、user 介入経路へ倒す。exit 3 と分けるのは、3 の推奨アクション = 強制終了して再試行が
+        /// この経路では必ず同じ所へ戻る行き止まりになるため)。
+        ///
+        /// 生きているが `MainModule` を読めないプロセス (権限差・AV による module 列挙阻害等) に当たると、
+        /// 「終了済みと誤判定して置換に進む」(= #440 の静かなデータ不整合) と「永久に待つ」(= 管理ソフトが
+        /// 消えたまま戻らない) の両方を避ける必要がある。**待たずに進むのも、無限に待つのも駄目**なので、
+        /// 一定時間で諦めて Manager dir に触らずに降りる。呼び出し側は失敗として扱い、再試行できる。
+        /// </summary>
+        UnidentifiableTimeout,
     }
 
     /// <summary>
@@ -60,6 +71,27 @@ namespace TonePrism.Updater
         private const int MaxEnumerationFailures = 5;
 
         /// <summary>
+        /// (#440) 「生きているが同一性を確認できない」状態を待つ上限 (秒)。これを超えたら
+        /// <see cref="WaitResult.UnidentifiableTimeout"/> で降りる。
+        ///
+        /// **`--wait-timeout 0` (無制限) でもこの上限は効く。** Manager は通常経路で常に無制限を渡すため
+        /// (`UpdaterClient`)、ここを timeout 任せにすると識別不能ケースで永久ループになる。Manager は既に
+        /// 終了処理へ入っていて UI が無いので、ユーザーからは「管理ソフトが消えたまま何も起きない」に見える。
+        ///
+        /// **(レビュー 9) 既定 `--wait-timeout` (60s) より小さくしてある。** 同値だと、CLI から既定値で
+        /// 走らせたとき識別不能の 60 秒と timeout の 60 秒のどちらが先に発火するかが「いつ識別不能に
+        /// なったか」次第になる。timeout 側が勝つと exit 3 が返り、その案内 (`--force-kill` を付けて再試行)
+        /// に従うと下の `forceKill && unidentified` ガードで必ず exit 9 に落ちる = 1 往復無駄になる。
+        /// 小さくしておけば「識別不能の方が必ず先に判定される」を機械的に保証できる。
+        /// (明示的にこの値未満の timeout を渡した場合は timeout が勝つが、それは呼び出し側の明示的な選択。
+        ///  Manager は常に `--wait-timeout 0` を渡すので通常運用はどちらにせよ本上限のみが効く。)
+        ///
+        /// **この値を変えたら `CliArgs.UsageText` は自動追従する** (補間で参照済み) が、
+        /// `Program` の docstring と SPEC §3.7.4 の exit 9 の行は手で直すこと (レビュー A-2)。
+        /// </summary>
+        internal const int UnidentifiedCapSeconds = 45;
+
+        /// <summary>
         /// Manager プロセスが全て終了するまで polling で待機する。
         /// </summary>
         /// <param name="timeoutSeconds">timeout 秒数 (0 で無制限)</param>
@@ -73,6 +105,7 @@ namespace TonePrism.Updater
             int iter = 0;
             int forceKillAttempts = 0;
             int consecutiveEnumerationFailures = 0;
+            var unidentifiedSince = new Stopwatch();
 
             if (callerPid > 0)
             {
@@ -87,9 +120,12 @@ namespace TonePrism.Updater
             {
                 Process[] procs;
                 bool enumerationFailed = false;
+                bool unidentified = false;
                 try
                 {
-                    procs = GetTargetProcesses(callerPid, expectedExePath);
+                    // (#440) verboseLog: 識別不能の警告は待機継続ログと同じ間引き (500ms ごとに出すと
+                    // 無限待機時にログが 2 行/秒で肥大する)。
+                    procs = GetTargetProcesses(callerPid, expectedExePath, iter % LogEveryNIter == 0, out unidentified);
                     consecutiveEnumerationFailures = 0;  // 成功で reset
                 }
                 catch (Exception ex)
@@ -140,8 +176,44 @@ namespace TonePrism.Updater
                         }
                     }
 
+                    // (#440) 「生きているが同一性を確認できない」状態の上限。**timeout 判定より先に見る** —
+                    // 通常経路は `--wait-timeout 0` (無制限) なので、下の timeout 判定はこのケースを拾えない。
+                    if (unidentified)
+                    {
+                        if (!unidentifiedSince.IsRunning) unidentifiedSince.Restart();
+                        if (unidentifiedSince.Elapsed.TotalSeconds >= UnidentifiedCapSeconds)
+                        {
+                            Logger.Error($"Manager プロセスの同一性を {UnidentifiedCapSeconds} 秒間確認できませんでした。"
+                                + " 起動中のまま置換に進むとデータが不整合になるため、Manager dir には触らずに中止します"
+                                + " (管理ソフトを手動で閉じてから、もう一度お試しください)");
+                            return WaitResult.UnidentifiableTimeout;
+                        }
+                    }
+                    else
+                    {
+                        unidentifiedSince.Reset();
+                    }
+
                     if (timeoutSeconds > 0 && sw.Elapsed.TotalSeconds >= timeoutSeconds)
                     {
+                        if (forceKill && unidentified)
+                        {
+                            // **(レビュー A-3) 出荷される 2 設定では到達しない防御コード。**
+                            // 上の UnidentifiedCapSeconds 判定が timeout 判定より前にあり、Manager が渡すのは
+                            // `--wait-timeout 0` (通常) か既定 60s (force-kill 経路) のどちらかなので、
+                            // 前者はこの分岐に入らず、後者は 45s で先に exit 9 へ降りる。
+                            // それでも残すのは、将来 `--force-kill` の配線や上限値を変えたときの防波堤のため。
+                            // 「dead では？」で消さないこと。
+                            //
+                            // (#440) 同一性を確認できていないプロセスは **kill しない**。ここを kill すると
+                            // 「同名 exe の別 install / 別権限の Manager を巻き添えで落とす」という、
+                            // path 検証がまさに防いでいる事故が読み取り不能ケースについてだけ復活する。
+                            // user 介入経路 (手動で閉じてから再試行) へ倒す。
+                            Logger.Error("timeout 経過。ただし Manager プロセスの同一性を確認できていないため"
+                                + " force-kill しません (別 install を巻き添えにしないため)。"
+                                + " 管理ソフトを手動で閉じてから、もう一度お試しください");
+                            return WaitResult.UnidentifiableTimeout;
+                        }
                         if (forceKill && !enumerationFailed)
                         {
                             forceKillAttempts++;
@@ -210,12 +282,18 @@ namespace TonePrism.Updater
         ///      → ProcessName 一致で誤認 → `--force-kill` 指定時に E:\ 側を kill する silent danger。
         ///      `MainModule.FileName` を `expectedExePath` (Program.cs が `--restart-exe` を渡す) と比較して
         ///      install path 単位で識別を強化。`expectedExePath` が null/empty なら本検証は skip (後方互換)。
-        ///      access denied / process exit 等で取得不能なら「安全側で Manager 既終了扱い」(空配列)。
-        ///   いずれの検証で不一致でも「Manager 既終了 + PID 再利用」とみなして空配列扱い (= 待機 skip 経路)、
-        ///   force-kill 対象から外す。
+        ///      **path が不一致**なら別 install / session なので空配列 (既終了扱い)。
+        ///      **読み取り不能** (Win32Exception = access denied / 32-64bit 差) は空配列にしない (#440)。
+        ///      「識別できない」を「終了済み」と読むと、起動中の Manager dir を置換しに行って静かな
+        ///      データ不整合を作る (= #440 の根本原因そのもの)。待機を継続しつつ `unidentified` を立てて
+        ///      caller に伝え、caller が UnidentifiedCapSeconds で打ち切る。**識別できていないので
+        ///      kill 対象には入れない** (別 install を巻き添えにしないため)。
+        ///   ProcessName 不一致 / path 不一致は「Manager 既終了 + PID 再利用」とみなして空配列扱い
+        ///   (= 待機 skip 経路)、force-kill 対象からも外す。
         /// </summary>
-        private static Process[] GetTargetProcesses(int callerPid, string expectedExePath)
+        private static Process[] GetTargetProcesses(int callerPid, string expectedExePath, bool verboseLog, out bool unidentified)
         {
+            unidentified = false;
             if (callerPid > 0)
             {
                 // PID-only モード: GetProcessById は対象不在で ArgumentException を投げるので捕捉して空配列扱い
@@ -263,17 +341,63 @@ namespace TonePrism.Updater
                         // InvalidOperationException (process exited)、NotSupportedException (rare)。
                         actualPath = p.MainModule != null ? p.MainModule.FileName : null;
                     }
-                    catch (System.ComponentModel.Win32Exception ex)
+                    catch (Exception ex) when (ex is System.ComponentModel.Win32Exception
+                                            || ex is NotSupportedException)
                     {
-                        Logger.Info($"PID={callerPid} の MainModule access denied ({ex.Message})、安全側で Manager 既終了扱い (識別不能 PID は kill しない方針)");
-                        try { p.Dispose(); } catch { }
-                        return new Process[0];
+                        // **「識別できない」を「終了済み」と読んではいけない** (#440)。
+                        //
+                        // (レビュー 10) `NotSupportedException` も同じ経路に寄せる。上の doc が投げうると
+                        // 列挙しているのに捕まえていなかったため、外側の catch(Exception) に流れて
+                        // 「enumeration の一時障害」として計上され exit 8 (= 短時間後の再試行で回復見込み)
+                        // になっていた。同じ「MainModule が読めない」事象が例外の種類で exit 8 と exit 9 に
+                        // 割れるうえ、exit 8 の案内はこのケースでは誤り (待っても直らない)。
+                        //
+                        // 旧実装はここで空配列を返し、Manager が動いたままでも「既に終了済み」として
+                        // 待機を skip していた。その結果 Manager dir の rename がアクセス拒否で失敗し、
+                        // ロールバックして「内部エラー」になる — しかも Launcher / CHANGELOG は先に
+                        // 置換済みなので、**Manager だけ古いまま「最新版を実行中」と表示される**
+                        // 静かな不整合に落ちる。実際に Bundle v0.9.0 以降ずっとこれが起きていた。
+                        //
+                        // 判定を諦める方向の「安全側」は kill の話であって、待機の話ではない。
+                        // ここまでで [1] ProcessName の一致は確認済みなので、**同名プロセスが生きている
+                        // 以上は待つ**方に倒す。待って空振りしても最悪 timeout で止まるだけだが、
+                        // 待たずに進むと上記の不整合を作る。
+                        //
+                        // kill は `--force-kill` 指定時のみで、Manager (UpdaterClient.Spawn) は常に
+                        // forceKill: false を渡すため、この経路で無関係プロセスを kill することはない。
+                        // (#440) 「識別できない」を「終了済み」と読まない。ただし**無限には待たない** —
+                        // caller が UnidentifiedCapSeconds で打ち切る。out で状態を伝える。
+                        unidentified = true;
+                        if (verboseLog)
+                        {
+                            Logger.Warn($"PID={callerPid} の MainModule を読めませんでした ({ex.Message})。"
+                                + " プロセス名は一致しているため Manager が起動中とみなして待機します"
+                                + " (同一性を確認できていないので kill 対象にはしません)。"
+                                + " Updater が 32bit で動いている場合はこの経路に入ります (#440)");
+                        }
+                        return new[] { p };
                     }
                     catch (InvalidOperationException)
                     {
                         // アクセス中にプロセス exit → 期待状態
                         try { p.Dispose(); } catch { }
                         return new Process[0];
+                    }
+
+                    if (actualPath == null)
+                    {
+                        // (レビュー Medium-2) `MainModule` は例外を投げずに **null を返すこともある**。
+                        // これを下の path 比較に流すと「別 path 'null'」= 別 install と判定され、
+                        // **#440 と同じ「識別できない」を「終了済み」と読む挙動が残る**。
+                        // 例外経路と同じく「同名プロセスが生きている以上は待つ」に倒す。
+                        unidentified = true;
+                        if (verboseLog)
+                        {
+                            Logger.Warn($"PID={callerPid} の MainModule が null でした。"
+                                + " プロセス名は一致しているため Manager が起動中とみなして待機します"
+                                + " (同一性を確認できていないので kill 対象にはしません)");
+                        }
+                        return new[] { p };
                     }
 
                     if (!string.Equals(actualPath, expectedExePath, StringComparison.OrdinalIgnoreCase))

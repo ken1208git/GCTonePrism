@@ -567,6 +567,19 @@ goto :fail
 
 :install_done
 
+REM ----- (#440) アップデートの受け渡しファイルを掃除する -----
+REM 手で入れ直した = それ以前のアップデート試行の結果は無効。放置すると、前回の
+REM アプリ内アップデートが失敗したときの記録 (.update_result) が残ったままになり、
+REM Manager の「アップデート」タブが解消済みの失敗を言い続ける。
+REM
+REM .update_completed (Manager -> Manager の申し送り) も同様に無効。Install.bat は
+REM これを書かないので、そもそも Manager はこの経路の更新に気づかない (= ダイアログは
+REM 出ない)。手で入れた人は自分で分かっているので、それが正しい挙動。
+REM
+REM 存在しないのが通常なので、失敗しても無視して続行する。
+del /q "%INSTALL_TARGET%\.update_result" >nul 2>&1
+del /q "%INSTALL_TARGET%\.update_completed" >nul 2>&1
+
 echo.
 echo ============================================================================
 echo  インストール完了: "%INSTALL_TARGET%"

@@ -1596,6 +1596,63 @@ function Build-Manager {
 # SPEC §3.7.4: Manager 置換 + 再起動の最小 CLI。.NET Framework 4.8 で SQLite / WindowsAPICodePack
 # 等の外部依存を持たない単純な Console app なので、Build-Manager の dotnet publish (net10
 # self-contained single-file) のような重い publish 不要。net48 を msbuild 直叩きでよい。
+function Assert-UpdaterBitness {
+    param([string]$ExePath)
+
+    # (#440) Updater が 32bit で焼かれていないことを機械強制する。
+    #
+    # `PlatformTarget=AnyCPU` の .NET Framework exe は `Prefer32Bit` の既定が **true** で 32bit として
+    # 起動する。Manager は Bundle v0.9.0 (#258) 以降 .NET 10 の 64bit 単一ファイルなので、32bit の
+    # Updater からは Manager プロセスの MainModule を読めず、ProcessWaiter が「既に終了済み」と誤判定
+    # して待機を skip → 起動中のまま Manager dir を rename → 失敗 → ロールバック、となる。
+    # **これでアプリ内アップデートが 2 リリース分ずっと壊れていた (#440)。**
+    #
+    # csproj には `<Prefer32Bit>false</Prefer32Bit>` があるが、Visual Studio が per-configuration の
+    # PropertyGroup に `true` を書き戻すと**後勝ちで無言に revert する**。SPEC §3.7.6.1 が「必須」と
+    # 書いているだけでは守られないので、他の版数 stamp 系 (Assert-PublishedManagerVersion /
+    # Assert-ExportedLauncherVersion) と同じく公開前に hard fail させる。
+    #
+    # 判定に PE ヘッダの machine は使えない (AnyCPU は常に I386/PE32)。COR フラグを見る必要があるので
+    # `Assembly.GetPEKind` を使う。ReflectionOnlyLoadFrom はコードを実行しない。
+    #
+    # **前提が 2 つある (レビュー Low-3)**:
+    #  (1) `ReflectionOnlyLoadFrom` は **Windows PowerShell 5.1 (.NET Framework) 専用**。PowerShell 7+
+    #      (.NET Core) では PlatformNotSupportedException になる。Release.bat が 5.1 (`powershell.exe`) で
+    #      起動する前提に依存しているので、7+ へ移す場合はここを `System.Reflection.Metadata` の
+    #      PEReader (CorFlags を直接読む) に書き換えること。catch は Fail に落ちるので**黙って通ることは無い**。
+    #  (2) 読み込んだ assembly は**プロセスが終わるまでファイルを掴む**。以降この exe を
+    #      削除・上書きする step があると失敗する。現状 Build-Updater は先頭で bin/Release を消してから
+    #      build するので、1 プロセス 1 回の実行では衝突しない (staging へのコピーは読み取りのみ)。
+    #  (3) **assembly identity でキャッシュされる。** 同一 PowerShell プロセス内で 2 回目に呼ぶと
+    #      1 回目にロードした古い assembly が返り得るため、間で再ビルドしても古い判定のまま
+    #      「OK」と言う silent pass になる。(1)(2) は Fail に落ちるが、これだけは黙って通る種類。
+    #      出荷経路 (Release.bat が毎回新しい powershell.exe を起動) では 1 プロセス 1 回なので
+    #      実害は無いが、この関数を同一セッションで再利用する形に変えるなら
+    #      System.Reflection.Metadata の PEReader で CorFlags を直読みしてキャッシュ依存を消すこと。
+    if (-not (Test-Path $ExePath)) {
+        Fail "Updater の bitness を検証できません (exe が見つかりません): $ExePath"
+    }
+    try {
+        $asm = [System.Reflection.Assembly]::ReflectionOnlyLoadFrom($ExePath)
+        $pek = [System.Reflection.PortableExecutableKinds]::ILOnly
+        $mach = [System.Reflection.ImageFileMachine]::I386
+        $asm.ManifestModule.GetPEKind([ref]$pek, [ref]$mach)
+    } catch {
+        Fail "Updater の PEKind を読めませんでした: $ExePath`n        $($_.Exception.Message)"
+    }
+    $kindText = $pek.ToString()
+    if ($kindText -match 'Preferred32Bit' -or $kindText -match 'Required32Bit') {
+        Fail @"
+Updater が 32bit として焼かれています (PEKind: $kindText)。
+        32bit の Updater は 64bit の Manager プロセスを識別できず、アプリ内アップデートが
+        「Manager だけ更新されない」形で静かに失敗します (#440)。
+        Companions/Updater/TonePrism_Updater.csproj に <Prefer32Bit>false</Prefer32Bit> があるか、
+        per-configuration の PropertyGroup で true に上書きされていないかを確認してください。
+"@
+    }
+    Write-Ok "Updater bitness OK (PEKind: $kindText = 32bit 指定なし)"
+}
+
 function Build-Updater {
     Write-Step "Updater を msbuild で Release ビルド"
 
@@ -1654,6 +1711,12 @@ function Build-Updater {
     if (-not (Test-Path $expectedExe)) {
         Fail "Updater ビルド出力に TonePrism_Updater.exe が見つかりません: csproj の AssemblyName が変更された可能性 (期待 path: $expectedExe)"
     }
+
+    # (#440) 32bit で焼かれていないことを公開前に hard fail で確認する。
+    # **上の存在 check より後に置く**: Assert-UpdaterBitness 自身も Test-Path で落ちるが、その文言は
+    # 「exe が見つかりません」止まりで、dir 不在 / AssemblyName 変更といった原因を言い当てられない
+    # (レビュー Low-2)。診断の細かい方を先に通してから bitness を見る。
+    Assert-UpdaterBitness -ExePath $expectedExe
     $outDir = Join-Path $FilesDir 'Companions\Updater'
     New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 

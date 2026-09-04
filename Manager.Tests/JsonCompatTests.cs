@@ -15,6 +15,8 @@ namespace TonePrism.Manager.Tests
         {
             public string CompletedAt { get; set; }
             public string NewVersion { get; set; }
+            /// <summary>(#440) 置換後に起動しているはずの Manager の FileVersion。旧 sentinel には無い。</summary>
+            public string NewManagerVersion { get; set; }
         }
 
         [Fact]
@@ -38,6 +40,81 @@ namespace TonePrism.Manager.Tests
             var back = JsonCompat.Deserialize<CamelWireDto>(json);
             Assert.Equal("T", back.CompletedAt);
             Assert.Equal("9.9.9", back.NewVersion);
+        }
+
+        [Fact]
+        public void Sentinel_NewManagerVersion_RoundTrips()
+        {
+            // (#440) 起動時の完了検証は「NewManagerVersion が非空で読めること」に全面的に乗っている。
+            // マッピングが壊れると null になり、検証が黙って skip されて従来どおり「✓ 完了」が出る
+            // = この修正が潰そうとしている silent pass の形でそのまま退行する。wire contract を固定する。
+            string json = JsonCompat.Serialize(new { completedAt = "T", newVersion = "0.11.1", newManagerVersion = "0.34.1.0" });
+            Assert.Contains("newManagerVersion", json);
+            var back = JsonCompat.Deserialize<CamelWireDto>(json);
+            Assert.Equal("0.34.1.0", back.NewManagerVersion);
+            Assert.Equal("0.11.1", back.NewVersion);
+            Assert.Equal("T", back.CompletedAt);
+        }
+
+        [Fact]
+        public void Sentinel_WithoutNewManagerVersion_YieldsNull_ForBackwardCompatibility()
+        {
+            // 旧 sentinel (2 フィールド) を読んでも throw せず、NewManagerVersion が null になること。
+            // 起動側はこれを見て検証を skip する (後方互換)。null にならないと誤検知で
+            // 「✗ アップデート未完了」を出しかねない。
+            string oldJson = JsonCompat.Serialize(new { completedAt = "2026-09-04T00:00:00Z", newVersion = "0.11.0" });
+            var dto = JsonCompat.Deserialize<CamelWireDto>(oldJson);
+            Assert.NotNull(dto);
+            Assert.Equal("0.11.0", dto.NewVersion);
+            Assert.Null(dto.NewManagerVersion);
+        }
+
+        [Fact]
+        public void Sentinel_ExplicitNullNewManagerVersion_RoundTripsAsNull()
+        {
+            // writer が実際に取り得る 3 つ目の形: staging exe を読めず expectedManagerVersion が null の
+            // まま匿名型に入り、wire に "newManagerVersion": null が出るケース (フィールド欠落とは別)。
+            // ここが null で返らないと、起動時の完了検証が誤って走って偽の「✗ 未完了」を出しかねない。
+            string json = JsonCompat.Serialize(new { completedAt = "T", newVersion = "0.11.1", newManagerVersion = (string)null });
+            var back = JsonCompat.Deserialize<CamelWireDto>(json);
+            Assert.NotNull(back);
+            Assert.Equal("0.11.1", back.NewVersion);
+            Assert.Null(back.NewManagerVersion);
+        }
+
+        [Fact]
+        public void UpdateRunResult_WireContract_RoundTrips()
+        {
+            // (#440) Updater が `<install>/.update_result` に残す実行結果。Manager 側の成否判定は
+            // 全面的にこの wire contract に乗っているので固定する。
+            string json = JsonCompat.Serialize(new { finishedAt = "T", exitCode = 4, targetManagerVersion = "0.34.1.0" });
+            var dto = JsonCompat.Deserialize<TonePrism.Manager.Services.UpdaterClient.UpdateRunResult>(json);
+            Assert.NotNull(dto);
+            Assert.Equal(4, dto.ExitCode);
+            Assert.Equal("0.34.1.0", dto.TargetManagerVersion);
+            // 成否は exitCode から導出する (ファイルに success は持たせない)。
+            Assert.False(dto.Success.Value);
+        }
+
+        [Fact]
+        public void UpdateRunResult_ExitCodeZero_MeansSuccess()
+        {
+            string json = JsonCompat.Serialize(new { finishedAt = "T", exitCode = 0, targetManagerVersion = "0.34.1.0" });
+            var dto = JsonCompat.Deserialize<TonePrism.Manager.Services.UpdaterClient.UpdateRunResult>(json);
+            Assert.True(dto.Success.Value);
+        }
+
+        [Fact]
+        public void UpdateRunResult_MissingExitCode_IsUnknown_NotFailure()
+        {
+            // exitCode を持たない (壊れた / 想定外の) ファイルを **失敗と決めつけない**。
+            // int で受けると欠落が 0 = 成功に化け、bool の success フィールドを持たせると欠落が
+            // false = 失敗に化ける。nullable にして「不明」を表現できるようにしてある。
+            string json = JsonCompat.Serialize(new { finishedAt = "T", targetManagerVersion = "0.34.1.0" });
+            var dto = JsonCompat.Deserialize<TonePrism.Manager.Services.UpdaterClient.UpdateRunResult>(json);
+            Assert.NotNull(dto);
+            Assert.False(dto.ExitCode.HasValue);
+            Assert.False(dto.Success.HasValue);
         }
 
         [Fact]

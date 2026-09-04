@@ -12,6 +12,13 @@
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <Deterministic>true</Deterministic>
+    <!-- **必ず false**。AnyCPU の .NET Framework exe は Prefer32Bit の既定が true で 32bit として
+         起動する。Manager は Bundle v0.9.0 (#258) 以降 .NET 10 の 64bit 単一ファイルなので、32bit の
+         Updater からは Manager プロセスの MainModule を読めず ("32 ビット プロセスは、64 ビット
+         プロセスのモジュールにアクセスできません")、ProcessWaiter が **Manager を終了済みと誤判定** →
+         起動中のまま Manager dir を rename → アクセス拒否 → ロールバックで「内部エラー」になる。
+         = アプリ内アップデートが v0.9.0 以降ずっと失敗していた原因 (#440)。 -->
+    <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <PlatformTarget>AnyCPU</PlatformTarget>
@@ -47,6 +54,7 @@
     <Compile Include="Logger.cs" />
     <Compile Include="ProcessWaiter.cs" />
     <Compile Include="FileReplacer.cs" />
+    <Compile Include="UpdateResult.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

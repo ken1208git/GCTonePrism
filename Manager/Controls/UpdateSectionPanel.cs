@@ -40,13 +40,18 @@ namespace TonePrism.Manager.Controls
             _dbManager = dbManager;
             _updateChecker = new UpdateChecker(dbManager.SettingsRepository);
 
-            // 起動時 hydrate (cache から「前回確認時の状態」を即時表示)
             RefreshVersionLabels();
+
+            // 「前回アップデート結果」バナーの材料。**読取り順に依存しない** (レビュー A-1) —
+            // ConsumePreviousRunState はプロセス内で 1 回だけ実体評価してキャッシュを返すので、
+            // 起動時ダイアログが先に消費した後でもここで同じ答えと終了コードが読める。
+            // 記録が無い (= 旧 Updater) ときだけ、従来のログ推測にフォールバックする。
+            int? lastExit = UpdaterClient.PreviousRunExitCode ?? UpdaterClient.TryLoadLastExitCode();
+
+            // 起動時 hydrate (cache から「前回確認時の状態」を即時表示)
             UpdateCheckResult cached = _updateChecker.LoadCacheOnly();
             ApplyResult(cached);
 
-            // 「前回アップデート結果」バナーがあれば表示
-            int? lastExit = UpdaterClient.TryLoadLastExitCode();
             if (lastExit.HasValue)
             {
                 ShowPreviousUpdateBanner(lastExit.Value);
@@ -142,6 +147,32 @@ namespace TonePrism.Manager.Controls
                     btnSkip.Enabled = false;
                     break;
                 case UpdateCheckStatus.UpToDate:
+                    // (#440) **前回のアップデートが失敗しているなら「最新版」ではない。**
+                    //
+                    // 現在の Bundle 版数は CHANGELOG.md から読む。ところが CHANGELOG は Updater の
+                    // spawn 成功後に置換されるため、spawn した Updater が**その後で**失敗すると
+                    // (= Manager dir の置換失敗) CHANGELOG だけ新しくなる。すると UpToDate と判定され、
+                    // 「最新版を実行中です」+ **「今すぐアップデート」が無効** になり、user は UI から
+                    // 再試行する手段を失う (実際 v0.10.0 / v0.11.0 でこの状態に陥った)。
+                    //
+                    // Updater の終了コードは失敗を正しく記録しているので、それを見て判定を覆す。
+                    // ここで再試行を許すのは安全側 — 既に最新なら適用しても同じ内容が入るだけ。
+                    PreviousUpdateVerdict verdict = GetPreviousUpdateVerdict();
+                    if (verdict != PreviousUpdateVerdict.Clean)
+                    {
+                        // (レビュー High-1) 「失敗」と「確認できなかった」で文言と色は変えるが、
+                        // **ボタンはどちらも有効にする**。断定できないことと、導線を閉じてよいことは別。
+                        bool prevFailed = (verdict == PreviousUpdateVerdict.Failed);
+                        lblStatusMessage.Text = prevFailed
+                            ? "前回のアップデートが完了していません。もう一度お試しください。"
+                            : "前回のアップデートの結果を確認できませんでした。必要ならもう一度お試しください。";
+                        lblStatusMessage.ForeColor = prevFailed
+                            ? System.Drawing.Color.DarkRed
+                            : System.Drawing.Color.DimGray;
+                        btnUpdateNow.Enabled = true;
+                        btnSkip.Enabled = false;
+                        break;
+                    }
                     // (#170 followup) cache 経由判定の場合、実 GitHub 最新と比較できていないため
                     // 緑文字「最新版を実行中」と断言すると過信させすぎ。stale cache 時は灰色 + 文言
                     // を「キャッシュ比較、再確認失敗中」に降格して信頼度を視覚化。
@@ -303,6 +334,58 @@ namespace TonePrism.Manager.Controls
             return day + " 日";
         }
 
+        /// <summary>
+        /// (#440) 前回のアップデートが未完了で終わったか。
+        ///
+        /// **Updater が書き残した実行結果を見る。** exit code のログ推測は直近 2 分しか遡らないため、
+        /// 失敗の翌朝に起動したケースでは読めず、CHANGELOG 由来の版数で「最新版を実行中」= ボタン無効に
+        /// 戻ってしまう (= #440 と同じ行き止まり)。結果ファイルは時間に依存しない。
+        ///
+        /// 値は 1 度読んだらキャッシュする (ApplyResult は cache hydrate / background check 完了 /
+        /// 手動再確認のたびに走り、そのつど UI スレッドでディレクトリ列挙する必要は無い)。
+        /// </summary>
+        /// <summary>前回の更新について、このタブが取るべき態度。</summary>
+        private enum PreviousUpdateVerdict
+        {
+            /// <summary>問題なし。通常の「最新版を実行中です」を出してよい。</summary>
+            Clean,
+            /// <summary>失敗が記録されている。赤字 + 再試行を促す。</summary>
+            Failed,
+            /// <summary>成否を確認できなかった。断定はしないが**再試行の導線は開けておく**。</summary>
+            Unverifiable,
+        }
+
+        /// <summary>
+        /// (レビュー High-1) **「判定材料から外す」と「導線を閉じる」を分離する。**
+        ///
+        /// 記録が壊れている (`Unreadable`) とき、それを「失敗ではない」と読んでボタンまで無効にすると
+        /// 詰む — 壊れた記録は意図的に削除しないので**毎回の起動で再現し、自然解消しない**。
+        /// 記録が消える 3 経路のうち「次の試行が上書き」はボタンが無効なら到達できず、残るのは
+        /// `Install.bat` だけ。起動時ダイアログが「もう一度お試しください」と案内した先が行き止まりになり、
+        /// **本 PR が立てた「失敗の記録が残っている限り再試行できる」という不変条件を破る。**
+        /// 断定はしない (赤字にも「失敗」とも言わない) が、押せる状態にはしておく。
+        /// </summary>
+        private PreviousUpdateVerdict GetPreviousUpdateVerdict()
+        {
+            // 「無い」と「読めない」は意味が正反対 — 前者は旧 Updater / 未更新で失敗の証拠ではなく、
+            // 後者は判定不能。混ぜると、成功した更新で記録が壊れていただけで偽の「未完了」を出す。
+            switch (UpdaterClient.ConsumePreviousRunState())
+            {
+                case UpdaterClient.PreviousRunState.Failed:
+                    return PreviousUpdateVerdict.Failed;
+                case UpdaterClient.PreviousRunState.Unreadable:
+                    return PreviousUpdateVerdict.Unverifiable;
+                case UpdaterClient.PreviousRunState.Succeeded:
+                    return PreviousUpdateVerdict.Clean;
+                default:
+                    // 記録が無い = 旧 Updater。従来のログ推測にフォールバックする。
+                    int? exitCode = UpdaterClient.TryLoadLastExitCode();
+                    bool failed = exitCode.HasValue
+                        && UpdaterClient.DispatchExitCode(exitCode.Value).Severity != ExitSeverity.Success;
+                    return failed ? PreviousUpdateVerdict.Failed : PreviousUpdateVerdict.Clean;
+            }
+        }
+
         private void ShowPreviousUpdateBanner(int exitCode)
         {
             ExitCodeDispatch dispatch = UpdaterClient.DispatchExitCode(exitCode);
@@ -359,8 +442,17 @@ namespace TonePrism.Manager.Controls
         private void btnUpdateNow_Click(object sender, EventArgs e)
         {
             Services.Logger.Info("[UpdateSectionPanel] btnUpdateNow_Click");
-            if (_currentResult == null || _currentResult.Latest == null) { Services.Logger.Warn("[UpdateSectionPanel] _currentResult / Latest が null、abort"); return; }
-            if (_currentResult.Latest.Version == null) { Services.Logger.Warn("[UpdateSectionPanel] Latest.Version が null、abort"); return; }
+            // (レビュー 4) **無言 return にしない。** 前回失敗時はこのボタンを強制的に有効へ戻すが、
+            // その状態でも `Latest` は null でありうる (ComputeStatus は latest=null でも UpToDate に倒れる)。
+            // ログだけ書いて黙って戻ると「押せるのに何も起きない」= 別の行き止まりを作る。
+            // 下の ZipAssetUrl 空チェックと対称に、理由を画面に出す。
+            if (_currentResult == null || _currentResult.Latest == null || _currentResult.Latest.Version == null)
+            {
+                Services.Logger.Warn("[UpdateSectionPanel] 最新リリース情報が無い状態で更新開始、abort");
+                MessageBox.Show("最新版の情報を取得できていません。「更新を確認」を押してから、もう一度お試しください。",
+                    "アップデート中止", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             if (string.IsNullOrEmpty(_currentResult.Latest.ZipAssetUrl))
             {
                 Services.Logger.Warn("[UpdateSectionPanel] ZipAssetUrl 空、abort");
@@ -466,12 +558,17 @@ namespace TonePrism.Manager.Controls
                     // 旧実装は ProcessingDialog 閉じてから即 Application.Exit で Manager が silent に
                     // 消える挙動 (= user 視点で「あれ?何が起きた?」になりやすい)。本 dialog で
                     // 「これから Manager を一旦終了 → 新版で自動起動」を明示してから user の OK で
-                    // 確定終了。新 Manager 起動時には sentinel 経由で「✓ アップデート完了」 dialog が出る。
+                    // 確定終了。新 Manager 起動時には sentinel 経由で結果 dialog が出る。
+                    //
+                    // (#440) **「完了のお知らせが出ます」と約束しない。** ここで完了しているのは
+                    // ダウンロードと展開までで、Manager dir の置換はこの後 Updater がやる。約束すると
+                    // 「引き渡した時点を完了と呼ぶ」同じ間違いをもう一度することになる (実際、置換に
+                    // 失敗しても完了 dialog が出ていた)。結果は新 Manager が検証してから出す。
                     MessageBox.Show(this,
                         "ダウンロードと展開が完了しました。\n\n" +
                         "OK を押すと Manager を一旦終了して、新しいバージョンで自動的に再起動します。\n" +
                         "再起動には数秒〜数十秒かかる場合があります。\n\n" +
-                        "新しい Manager が起動したら、「✓ アップデート完了」のお知らせが表示されます。",
+                        "新しい Manager が起動したら、アップデートの結果をお知らせします。",
                         "Manager を再起動します",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
@@ -804,10 +901,42 @@ namespace TonePrism.Manager.Controls
                 try
                 {
                     string sentinelPath = System.IO.Path.Combine(PathManager.BaseDirectory, ".update_completed");
+                    // (#440) **これから入るはずの Manager の版数**も書く。再起動した Manager が自分の
+                    // assembly 版数と突き合わせて「本当に置換されたか」を確認するために使う。
+                    // sentinel は Updater の **spawn 成功後**に書かれるだけで、spawn した Updater が
+                    // その後で失敗するケース (= Manager dir の置換失敗) を捕まえていなかった。
+                    // その結果、置換に失敗した**古い Manager** が起動して「✓ アップデート完了 /
+                    // 新しい管理ソフトが起動しています」と表示していた (v0.9.0 以降 2 リリース分、
+                    // 更新失敗がこれで隠れていた)。
+                    string expectedManagerVersion = null;
+                    try
+                    {
+                        // **manifest.Layout ではなく、置換が実際に読む場所から取る。**
+                        // この値の意味は「実際に入る Manager の版数」なので、置換元と違う場所を見たら
+                        // 意味を成さない。Manager dir を置換するのは Updater の FileReplacer で、
+                        // そちらは `<staging>/files/Manager` を **ハードコード**している
+                        // (SPEC §3.7.7 が言うとおり `manager_dir` は consumer 不在の scaffolding slot で、
+                        //  Updater は layout 経由の path 解決に未移行)。ここで layout を使うと、layout を
+                        // 変えた瞬間に「期待版数」だけ実際の置換元と別の場所を指す。
+                        // Updater を layout 対応させるときは、ここも一緒に直すこと。
+                        string stagingManagerExe = System.IO.Path.Combine(
+                            bundleRoot, "files", "Manager", "TonePrism_Manager.exe");
+                        if (System.IO.File.Exists(stagingManagerExe))
+                        {
+                            expectedManagerVersion = System.Diagnostics.FileVersionInfo
+                                .GetVersionInfo(stagingManagerExe).FileVersion;
+                        }
+                    }
+                    catch (Exception mvEx)
+                    {
+                        // 取れなくても致命的ではない (旧来どおり Bundle 版数だけの dialog になる)。
+                        Services.Logger.Warn("[UpdateSectionPanel] staging Manager の版数取得に失敗 (完了検証は skip): " + mvEx.Message);
+                    }
                     string json = Services.JsonCompat.Serialize(new
                     {
                         completedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture),
                         newVersion = targetVersion.ToString(3),
+                        newManagerVersion = expectedManagerVersion,
                     });
                     System.IO.File.WriteAllText(sentinelPath, json, System.Text.Encoding.UTF8);
                     Services.Logger.Info("[UpdateSectionPanel] update_completed sentinel 書出し: " + sentinelPath);

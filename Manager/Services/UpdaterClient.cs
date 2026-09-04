@@ -178,12 +178,239 @@ namespace TonePrism.Manager.Services
         }
 
         /// <summary>
-        /// `<install>/logs/updater/` 配下の直近 **2 分以内** のログから Updater の exit code を回収する。
-        /// 新 Manager が起動した直後 (MainForm_Load) で呼んで「前回アップデート結果」を UI バナーに出す用途。
-        /// 該当ログが見つからない / parse 失敗時は null。
+        /// (#440) Updater が書き残した実行結果 (`&lt;install&gt;/.update_result`)。
         ///
-        /// **注意 (round 2 M8)**: 旧 docstring は「1 分以内」と書いていたが実装は `AddMinutes(-2)` (= 2 分)、
-        /// round 1 H3 fix で書き直した際の追従漏れ。docstring を実装に揃えて訂正。
+        /// Manager は Updater の**プロセス終了コードを受け取れない** (受け取るには待つ必要があるが、
+        /// 待っていると dir を置換できない)。そのため従来は「ログ末尾 20 行に `[ERROR]` があれば失敗」
+        /// という推測をしていた。ログは人間向けの副産物であって API ではなく、**文言を変えた人が判定を
+        /// 壊せる**うえ「どの実行の話か」も分からない (だから直近 2 分という窓が要った)。
+        /// Updater が答えを持っているのだから、解析で復元せず**消えない場所に書いてもらう**。
+        /// </summary>
+        public sealed class UpdateRunResult
+        {
+            /// <summary>
+            /// Updater の終了コード (0 = 成功)。**null は「ファイルはあるが値を読めなかった」**
+            /// を意味する (JSON が壊れている / フィールドが無い)。`int` にすると欠落が 0 = 成功に
+            /// 化けてしまうので nullable にしてある。
+            /// </summary>
+            public int? ExitCode { get; set; }
+            /// <summary>
+            /// この更新で入るはずだった Manager の FileVersion (読めなければ null)。
+            /// **判定には使っていない** — 版数による自動失効を撤廃したため consumer は無い。
+            /// `.update_result` を人が開いて「どの版へ更新しようとして失敗したか」を知るための診断情報。
+            /// </summary>
+            public string TargetManagerVersion { get; set; }
+
+            /// <summary>
+            /// 成否。**`ExitCode` から導出する** — 同じ事実をファイルに 2 つ持たせない
+            /// (食い違ったときどちらが正か決まらないため)。値を読めなければ null (= 不明)。
+            /// </summary>
+            public bool? Success
+            {
+                get { return ExitCode.HasValue ? (bool?)(ExitCode.Value == 0) : null; }
+            }
+        }
+
+        internal static string UpdateResultPath
+        {
+            get { return Path.Combine(PathManager.BaseDirectory, ".update_result"); }
+        }
+
+        /// <summary>
+        /// (#440) 実行結果を読む。ファイルが無ければ null (= 旧 Updater か、まだ一度も更新していない)。
+        /// 呼び出し側は null のとき従来の <see cref="TryLoadLastExitCode"/> にフォールバックする。
+        /// </summary>
+        public static UpdateRunResult TryLoadUpdateResult()
+        {
+            try
+            {
+                if (!File.Exists(UpdateResultPath)) return null;
+                string json = File.ReadAllText(UpdateResultPath, System.Text.Encoding.UTF8);
+                // 空・欠落の正規化はここではしない。`ExitCode` が nullable なので
+                // 「値が無い」はそのまま null として消費側 (`Success` == null) に伝わる。
+                return JsonCompat.Deserialize<UpdateRunResult>(json);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[UpdaterClient] .update_result を読めませんでした: " + ex.Message);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// (レビュー Medium) **「ファイルが無い」と「あるが読めない」を区別する。**
+        ///
+        /// <see cref="TryLoadUpdateResult"/> はどちらでも null を返すが、消費側での意味は正反対:
+        /// 「無い」は旧 Updater / 未更新（＝失敗の証拠ではない）、「読めない」は判定不能（＝失敗とも
+        /// 成功とも言えない）。両者を混ぜると、成功した更新でファイルがロック・破損していただけで
+        /// 偽の「✗ アップデート未完了」を出してしまう。`success` フィールドを拒否したのと同じ理由
+        /// （「欠けている」と「false」を区別できない形にしない）。
+        /// </summary>
+        public static bool UpdateResultFileExists()
+        {
+            try { return File.Exists(UpdateResultPath); }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// (#440) Updater が結果を残さずに終わった場合に、**Manager 側から失敗を記録する**。
+        ///
+        /// 申し送り (`.update_completed`) は読んだ時点で必ず消える一度きりの通知なので、これを書かないと
+        /// 次回起動で判断材料が全部無くなり、「最新版を実行中」+ ボタン無効の袋小路に戻る
+        /// (= #440 と同じ行き止まり)。申し送りを残す案は採らない — 手動で `Install.bat` から復旧しても
+        /// 結果ファイルは生まれないため、直したのに永久に警告が出続けることになる。
+        ///
+        /// 状態の置き場所を `.update_result` 1 つに保つ（失効条件は <see cref="ConsumePreviousRunState"/> を参照）。
+        ///
+        /// 終了コードは 1 (汎用エラー = 「内部エラー、ログを確認」) として記録する。Updater が実際の
+        /// コードを残せなかった以上、原因は本当に分からない。
+        /// </summary>
+        public static void RecordFailureWithoutUpdaterResult(string targetManagerVersion)
+        {
+            try
+            {
+                string json = "{"
+                    + "\"finishedAt\":\"" + DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture) + "\","
+                    + "\"exitCode\":1,"
+                    + "\"targetManagerVersion\":" + (string.IsNullOrEmpty(targetManagerVersion) ? "null" : "\"" + EscapeJsonString(targetManagerVersion) + "\"")
+                    + "}";
+                File.WriteAllText(UpdateResultPath, json, new System.Text.UTF8Encoding(false));
+                // 書いた内容でキャッシュも更新する。しないと、この直後にアップデートタブが
+                // ConsumePreviousRunState を呼んだとき「記録なし」のまま (= 書く前の評価結果) を返し、
+                // せっかく残した失敗記録が再試行導線に反映されない。
+                _previousRun = PreviousRunState.Failed;
+                _previousRunExitCode = 1;
+                Logger.Info("[UpdaterClient] Updater が結果を残さなかったため、Manager 側で未完了を記録しました");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[UpdaterClient] 未完了の記録に失敗 (継続): " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// (レビュー D-2) JSON 文字列値の最小エスケープ。
+        ///
+        /// `targetManagerVersion` は **staging exe の VERSIONINFO リソース由来**であって自前生成の
+        /// 版数文字列ではない。`"1.0.0.0 (release)"` のような任意文字列が入りうるので、`"` / `\` が
+        /// 混ざると JSON が壊れ、次回起動で「あるが読めない」= 判定不能に落ちる。
+        /// </summary>
+        private static string EscapeJsonString(string s)
+        {
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        /// <summary>
+        /// (#440) 実行結果を消す。**唯一の呼び出し元は <see cref="ConsumePreviousRunState"/> の成功経路**
+        /// (レビュー Medium-1 で消費者に一本化)。成功はもう覚えておく必要が無い。
+        /// 失敗は残す (アップデートタブが再試行ボタンを有効に戻すために後で参照するため)。
+        /// </summary>
+        public static void ClearUpdateResult()
+        {
+            try { if (File.Exists(UpdateResultPath)) File.Delete(UpdateResultPath); }
+            catch (Exception ex) { Logger.Warn("[UpdaterClient] .update_result の削除に失敗 (継続): " + ex.Message); }
+        }
+
+        /// <summary>
+        /// (#440) 前回の Updater 実行がどう終わったか。**「無い」「読めない」「成功」「失敗」を区別する。**
+        ///
+        /// 呼び出し側が `bool` で受け取ると「読めなかった」が「失敗していない」に潰れ、
+        /// 確かめられなかったものを確かめて成功したのと同じに扱ってしまう (レビュー D-1)。
+        /// </summary>
+        public enum PreviousRunState
+        {
+            /// <summary>結果ファイルが無い。旧 Updater か、まだ一度も更新していない。**失敗の証拠ではない。**</summary>
+            NoRecord,
+            /// <summary>ファイルはあるが終了コードを読めない (torn write / 破損)。**判定材料に使えない。**</summary>
+            Unreadable,
+            /// <summary>成功 (exitCode == 0)。読んだ時点で記録を消費済み。</summary>
+            Succeeded,
+            /// <summary>失敗 (exitCode != 0)。記録は残してある (再試行導線のため)。</summary>
+            Failed,
+        }
+
+        private static PreviousRunState? _previousRun;
+        private static int? _previousRunExitCode;
+
+        /// <summary>
+        /// (#440) 前回の実行結果を**読んで、成功なら消す** (consume)。プロセス内で 1 回だけ実体評価し、
+        /// 以降はキャッシュを返すので、どこから何回呼んでも安全・同じ答えになる。
+        ///
+        /// **かつて `HasUnresolvedFailure` という述語名だった** (レビュー A-1)。`Has...` は副作用の無い
+        /// 問い合わせを期待させるのに実体は consume なので、本 PR だけで読取り順・呼出し位置の事故を
+        /// 4 回踏んだ (バナーを消えた後に読む / 条件分岐の内側にしか無い / 存在確認を後にする /
+        /// 起動時ダイアログが先に消す)。名前を動詞にし、さらに**呼出し順への依存そのものを消す**ため
+        /// 結果をキャッシュした。「先に消える」も「読まれない」も起きない。
+        ///
+        /// **記録が消えるのは 3 経路だけ**: (1) ここで成功を確認したとき (2) 次の試行が上書きしたとき
+        /// (3) `Install.bat` が掃除したとき。**版数では失効させない** — 版数が変わらない Bundle リリースで
+        /// 失敗記録が即座に消え、起動時ダイアログが案内した再試行導線がその場で行き止まりになるため。
+        /// </summary>
+        public static PreviousRunState ConsumePreviousRunState()
+        {
+            if (_previousRun.HasValue) return _previousRun.Value;
+
+            PreviousRunState state;
+            if (!UpdateResultFileExists())
+            {
+                state = PreviousRunState.NoRecord;
+            }
+            else
+            {
+                UpdateRunResult result = TryLoadUpdateResult();
+                if (result == null || !result.Success.HasValue)
+                {
+                    // ファイルはあるが値を読めない。「失敗」と決めつけると偽の警告を出すので判定材料から
+                    // 外すが、**消しもしない** — 消すと上の 3 経路の外に 4 つ目の削除が生まれ、
+                    // 「記録がある限り再試行できる」不変条件が崩れる。次の試行か Install.bat が掃除する。
+                    Logger.Warn("[UpdaterClient] .update_result を解釈できません。判定材料として使いません");
+                    state = PreviousRunState.Unreadable;
+                }
+                else
+                {
+                    _previousRunExitCode = result.ExitCode;
+                    if (result.Success.Value)
+                    {
+                        ClearUpdateResult();
+                        state = PreviousRunState.Succeeded;
+                    }
+                    else
+                    {
+                        state = PreviousRunState.Failed;
+                    }
+                }
+            }
+            _previousRun = state;
+            return state;
+        }
+
+        /// <summary>
+        /// 前回実行の終了コード (結果ファイルを読めなかった場合は null)。
+        /// <see cref="ConsumePreviousRunState"/> のキャッシュから返すので、成功記録を消した後でも読める
+        /// (= バナー表示が消費順に依存しない)。
+        /// </summary>
+        public static int? PreviousRunExitCode
+        {
+            get { ConsumePreviousRunState(); return _previousRunExitCode; }
+        }
+
+        /// <summary>テスト用。プロセス内キャッシュを捨てて再評価できるようにする。</summary>
+        internal static void ResetPreviousRunStateForTest()
+        {
+            _previousRun = null;
+            _previousRunExitCode = null;
+        }
+
+        /// <summary>
+        /// (旧経路) `&lt;install&gt;/logs/updater/` 配下の**直近 2 分以内**のログ末尾 20 行を走査し、
+        /// `[ERROR]` があれば失敗とみなして exit code を推測する。
+        ///
+        /// **`TryLoadUpdateResult` が使えないときだけの fallback** (= 旧 Updater で実行結果ファイルが
+        /// 無いケース)。判定が「末尾 20 行に `[ERROR]`」という**文言依存**で、「どの実行の話か」も
+        /// 分からないため 2 分窓が必要という、二重に当てにならない推測。
+        /// **現状 `[ERROR]` が出るのは全て非 0 return 経路**なので偶然成立しているが、
+        /// 非致命箇所に `Logger.Error` を 1 本足した瞬間に成功した更新が失敗へ倒れる。
+        /// **新しい判定はすべて <see cref="TryLoadUpdateResult"/> を一次情報にすること (#440)。**
         /// </summary>
         public static int? TryLoadLastExitCode()
         {
@@ -252,7 +479,7 @@ namespace TonePrism.Manager.Services
 
         /// <summary>
         /// Updater の exit code を user-facing なメッセージ + 推奨アクションに変換 (SPEC §3.7.4 dispatch 規約)。
-        /// 8 種類の exit code それぞれに対応した user 向け文言を返す。
+        /// exit code 0-9 それぞれに対応した user 向け文言を返す (SPEC §3.7.4 の表と同期すること)。
         /// </summary>
         public static ExitCodeDispatch DispatchExitCode(int exitCode)
         {
@@ -310,8 +537,10 @@ namespace TonePrism.Manager.Services
                     return new ExitCodeDispatch
                     {
                         Severity = ExitSeverity.Warn,
-                        Title = "新 Manager 起動失敗",
-                        Message = "新しい Manager が起動できませんでした (旧 Manager は復元済)。再試行で改善しない場合は Install.bat で再 install してください。",
+                        Title = "新しい管理ソフトを確認できませんでした",
+                        Message = "入れかえた管理ソフトが起動できなかったか、入れかえが反映されていませんでした (旧 Manager は復元済)。"
+                            + "アンチウイルスソフトが更新を妨げていないかを確認してから再試行してください。"
+                            + "改善しない場合は Install.bat で入れ直してください。",
                         SuggestedAction = ExitAction.Retry,
                     };
                 case 7:
@@ -328,6 +557,19 @@ namespace TonePrism.Manager.Services
                         Severity = ExitSeverity.Warn,
                         Title = "一時的な不調",
                         Message = "プロセス列挙が連続失敗しました (IPC / WMI 一時障害の可能性)。数分後に再試行してください。",
+                        SuggestedAction = ExitAction.Retry,
+                    };
+                case 9:
+                    // (#440 レビュー Medium) 「同一性を確認できないまま上限に達した」専用。
+                    // exit 3 を再利用すると `RetryWithForceKill` が案内されるが、この経路は
+                    // **同一性を確認できないプロセスを kill しない**方針なので、強制終了で再試行しても
+                    // また同じところに戻る = 行き止まりループになる。#440 の教訓 (行き止まりを作らない)
+                    // に反するため、force-kill を勧めない専用の案内に分ける。
+                    return new ExitCodeDispatch
+                    {
+                        Severity = ExitSeverity.Warn,
+                        Title = "Manager を確認できませんでした",
+                        Message = "起動中の Manager を特定できなかったため、データを壊さないよう更新を中止しました。管理ソフトを手動で閉じてから、もう一度お試しください。",
                         SuggestedAction = ExitAction.Retry,
                     };
                 default:
