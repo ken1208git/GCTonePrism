@@ -1418,6 +1418,8 @@ WinForms の `MessageBox.Show` / `Form.ShowDialog` は **owner が `null` のと
 - `FallbackToVisibleMainForm` は可視化してから `this` を渡すので規約を満たす（例外ではなく、規約の適用例）
 - **MainForm 撤去時の注意**: 本規約自体は MainForm 非依存なのでそのまま生きる（むしろシェルが起動当初から存在するので常に可視 owner が取れる）。ただし `FallbackToVisibleMainForm` は退避先が MainForm 自身なので代替が必要。詳細は #245
 
+> **本規約は暫定 (#460)**。「呼ぶ側が正しい owner を渡すことを覚えている」という前提に立っており、#449 の原因（`MessageBox.Show(this, …)` は #245 以前は正しく、MainForm の裏方化で 262 箇所すべての前提が一斉に崩れたのに誰も気づけなかった）を構造的には防げない。**呼び出し口を `AppDialog` に集約し、`MessageBox.Show` の直接使用をアナライザで禁止する**のが本命の解で、そこまで行けば本節は「`AppDialog` の内部仕様」に縮む。
+
 ##### 判定に `Control.Visible` を使わない
 
 WinForms は**最初の物理表示より前 (= `Form_Load` 実行中) でも `Visible == true` を返す**。実測:
