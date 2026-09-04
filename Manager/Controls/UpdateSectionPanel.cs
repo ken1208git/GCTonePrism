@@ -866,10 +866,16 @@ namespace TonePrism.Manager.Controls
                     string expectedManagerVersion = null;
                     try
                     {
+                        // **manifest.Layout ではなく、置換が実際に読む場所から取る。**
+                        // この値の意味は「実際に入る Manager の版数」なので、置換元と違う場所を見たら
+                        // 意味を成さない。Manager dir を置換するのは Updater の FileReplacer で、
+                        // そちらは `<staging>/files/Manager` を **ハードコード**している
+                        // (SPEC §3.7.7 が言うとおり `manager_dir` は consumer 不在の scaffolding slot で、
+                        //  Updater は layout 経由の path 解決に未移行)。ここで layout を使うと、layout を
+                        // 変えた瞬間に「期待版数」だけ実際の置換元と別の場所を指す。
+                        // Updater を layout 対応させるときは、ここも一緒に直すこと。
                         string stagingManagerExe = System.IO.Path.Combine(
-                            bundleRoot,
-                            (manifest?.Layout?.ManagerDir ?? "files/Manager").Replace('/', System.IO.Path.DirectorySeparatorChar),
-                            "TonePrism_Manager.exe");
+                            bundleRoot, "files", "Manager", "TonePrism_Manager.exe");
                         if (System.IO.File.Exists(stagingManagerExe))
                         {
                             expectedManagerVersion = System.Diagnostics.FileVersionInfo
