@@ -196,10 +196,23 @@ namespace TonePrism.Manager.Services
         /// </summary>
         public sealed class UpdateRunResult
         {
-            public int ExitCode { get; set; }
-            public bool Success { get; set; }
+            /// <summary>
+            /// Updater の終了コード (0 = 成功)。**null は「ファイルはあるが値を読めなかった」**
+            /// を意味する (JSON が壊れている / フィールドが無い)。`int` にすると欠落が 0 = 成功に
+            /// 化けてしまうので nullable にしてある。
+            /// </summary>
+            public int? ExitCode { get; set; }
             /// <summary>この更新で入るはずだった Manager の FileVersion (読めなければ null)。</summary>
             public string TargetManagerVersion { get; set; }
+
+            /// <summary>
+            /// 成否。**`ExitCode` から導出する** — 同じ事実をファイルに 2 つ持たせない
+            /// (食い違ったときどちらが正か決まらないため)。値を読めなければ null (= 不明)。
+            /// </summary>
+            public bool? Success
+            {
+                get { return ExitCode.HasValue ? (bool?)(ExitCode.Value == 0) : null; }
+            }
         }
 
         internal static string UpdateResultPath
@@ -248,7 +261,15 @@ namespace TonePrism.Manager.Services
         {
             UpdateRunResult result = TryLoadUpdateResult();
             if (result == null) return false;
-            if (result.Success)
+            if (!result.Success.HasValue)
+            {
+                // ファイルはあるが値を読めない。ここで「失敗」と決めつけると偽の警告を出すので、
+                // 判定材料として使わず捨てる (呼び出し側は版数比較や従来の推測に倒れる)。
+                Logger.Warn("[UpdaterClient] .update_result に終了コードがありません。判定材料として使いません");
+                ClearUpdateResult();
+                return false;
+            }
+            if (result.Success.Value)
             {
                 ClearUpdateResult();
                 return false;

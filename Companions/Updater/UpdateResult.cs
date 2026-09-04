@@ -53,10 +53,12 @@ namespace TonePrism.Updater
                 string targetVersion = ReadStagingManagerVersion(stagingDir);
                 // 依存を増やさないため手書きの JSON。値は自前で生成した版数文字列と数値のみで、
                 // ユーザー入力は入らない (escape が要る文字が混ざらない)。
+                // 成否は `exitCode == 0` から導けるので **success フィールドは持たない**。
+                // 同じ事実の出所が 2 つあると食い違ったときどちらが正か決まらず、しかも bool は
+                // 「欠けている」と「false」を区別できないため、欠落したファイルを失敗と読んでしまう。
                 string json = "{"
                     + "\"finishedAt\":\"" + DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture) + "\","
                     + "\"exitCode\":" + exitCode.ToString(CultureInfo.InvariantCulture) + ","
-                    + "\"success\":" + (exitCode == 0 ? "true" : "false") + ","
                     + "\"targetManagerVersion\":" + (targetVersion == null ? "null" : "\"" + targetVersion + "\"")
                     + "}";
 

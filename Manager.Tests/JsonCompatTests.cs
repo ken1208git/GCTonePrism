@@ -85,15 +85,36 @@ namespace TonePrism.Manager.Tests
         [Fact]
         public void UpdateRunResult_WireContract_RoundTrips()
         {
-            // (#440) Updater が書き `<install>/.update_result` に残す実行結果。Manager 側の成否判定は
-            // 全面的にこの wire contract に乗っている。マッピングが壊れると null / 既定値になり、
-            // 判定が黙って旧ログ推測にフォールバックする = silent な劣化になるので固定する。
-            string json = JsonCompat.Serialize(new { finishedAt = "T", exitCode = 4, success = false, targetManagerVersion = "0.34.1.0" });
+            // (#440) Updater が `<install>/.update_result` に残す実行結果。Manager 側の成否判定は
+            // 全面的にこの wire contract に乗っているので固定する。
+            string json = JsonCompat.Serialize(new { finishedAt = "T", exitCode = 4, targetManagerVersion = "0.34.1.0" });
             var dto = JsonCompat.Deserialize<TonePrism.Manager.Services.UpdaterClient.UpdateRunResult>(json);
             Assert.NotNull(dto);
             Assert.Equal(4, dto.ExitCode);
-            Assert.False(dto.Success);
             Assert.Equal("0.34.1.0", dto.TargetManagerVersion);
+            // 成否は exitCode から導出する (ファイルに success は持たせない)。
+            Assert.False(dto.Success.Value);
+        }
+
+        [Fact]
+        public void UpdateRunResult_ExitCodeZero_MeansSuccess()
+        {
+            string json = JsonCompat.Serialize(new { finishedAt = "T", exitCode = 0, targetManagerVersion = "0.34.1.0" });
+            var dto = JsonCompat.Deserialize<TonePrism.Manager.Services.UpdaterClient.UpdateRunResult>(json);
+            Assert.True(dto.Success.Value);
+        }
+
+        [Fact]
+        public void UpdateRunResult_MissingExitCode_IsUnknown_NotFailure()
+        {
+            // exitCode を持たない (壊れた / 想定外の) ファイルを **失敗と決めつけない**。
+            // int で受けると欠落が 0 = 成功に化け、bool の success フィールドを持たせると欠落が
+            // false = 失敗に化ける。nullable にして「不明」を表現できるようにしてある。
+            string json = JsonCompat.Serialize(new { finishedAt = "T", targetManagerVersion = "0.34.1.0" });
+            var dto = JsonCompat.Deserialize<TonePrism.Manager.Services.UpdaterClient.UpdateRunResult>(json);
+            Assert.NotNull(dto);
+            Assert.False(dto.ExitCode.HasValue);
+            Assert.False(dto.Success.HasValue);
         }
 
         [Fact]

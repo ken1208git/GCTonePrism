@@ -111,12 +111,13 @@ namespace TonePrism.Updater
                     logDir = Path.Combine(managerParent, "logs", "updater");
                 }
             }
-            Logger.Initialize(logDir);
-
             // finally で結果を書き出すため初期値が要る (Run が例外で抜けた場合も 1 = 汎用エラーとして残る)。
             int exitCode = 1;
             try
             {
+                // (#440) Logger.Initialize も try の中に入れる。ここで throw すると (log dir の権限問題等)
+                // finally を通らず実行結果が残らない = Manager 側から「何も起きなかった」ように見えてしまう。
+                Logger.Initialize(logDir);
                 exitCode = Run(parsed);
             }
             catch (Exception ex)
@@ -129,6 +130,13 @@ namespace TonePrism.Updater
                 // (#440) 終了コードを消えない場所に残す。Manager は Updater の終了を待てない
                 // (待つと dir を置換できない) ため、これが無いとログ解析で推測するしかなくなる。
                 // Logger.Shutdown より前に呼ぶ (書き出し結果自体もログに残したいため)。
+                //
+                // **書き出せない経路が 3 つある**: `--help` (exit 0) / 引数 parse 失敗 (exit 2) /
+                // parse 中の예 예外 (exit 1)。いずれも本 try より前に return しており、そもそも
+                // `--manager-target` が読めていないので**書き込み先が決まらない**。
+                // ただしその 3 つは Manager 側が渡す引数の不具合であり、かつ Manager dir は一切
+                // 触られていないため、起動側の版数比較 (期待版数 != 実行中版数) が失敗を捉える
+                // (原因欄が「原因不明」になるだけ)。判定が漏れることはない。
                 UpdateResult.Write(parsed.ManagerTargetDir, parsed.StagingDir, exitCode);
                 Logger.Shutdown();
             }

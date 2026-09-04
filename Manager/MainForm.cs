@@ -1309,14 +1309,14 @@ namespace TonePrism.Manager
             // ログ推測にフォールバックする。ログ推測は「末尾 20 行に [ERROR] があれば失敗」+「直近 2 分」
             // というヒューリスティックで、致命的でない Error 行で誤判定するうえ失敗の翌朝には読めない。
             var runResult = Services.UpdaterClient.TryLoadUpdateResult();
-            int? exitCode = runResult != null
-                ? (int?)runResult.ExitCode
+            int? exitCode = (runResult != null && runResult.ExitCode.HasValue)
+                ? runResult.ExitCode
                 : Services.UpdaterClient.TryLoadLastExitCode();
             string detail = exitCode.HasValue
                 ? Services.UpdaterClient.DispatchExitCode(exitCode.Value).Title
                 : "原因不明";
-            bool exitFailed = runResult != null
-                ? !runResult.Success
+            bool exitFailed = (runResult != null && runResult.Success.HasValue)
+                ? !runResult.Success.Value
                 : (exitCode.HasValue
                     && Services.UpdaterClient.DispatchExitCode(exitCode.Value).Severity != Services.ExitSeverity.Success);
 
