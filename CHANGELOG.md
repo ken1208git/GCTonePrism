@@ -1373,6 +1373,18 @@ Release.bat の編集は **UTF-8 (no BOM) + CRLF** 厳守 (SPEC §3.7.9.1 参照
 
 SPEC §2.4 で定義される「主要 (Launcher / Manager / Monitor) を補助する独立 exe 群」の **runtime exe** の変更履歴。`Companions/Updater/TonePrism_Updater.exe` (Manager 自身の dir 置換用) + `LauncherAgent` (#30/#101/#216、probe/sensor/focus を統合した Launcher 補助の常駐エージェント、旧 WindowProbe を吸収) の deployment 配置と整合。本 section は **#160 で `## Updater (Companions/Updater)` から rename + 一般化**、`## Release Tooling` (= build / 配布スクリプト) と責務分離 (= 後者は build 時のみ動く scripts、本 section は runtime exe)。SPEC §2.4 / §3.7.4 参照。
 
+### [Updater v0.2.2] - 2026-09-04
+
+#### Fixed — アプリ内アップデートで Manager だけ更新されない不具合（`fix/updater-64bit`、#440）
+
+- **管理ソフトの「アップデート」タブから更新すると、Manager だけが古いまま残る**不具合を修正しました。しかも Launcher と CHANGELOG は先に更新されるため、**アップデート後の画面は「最新版を実行中です」と表示**します（実際には古い Manager が動いています）。**Bundle v0.9.0 以降ずっと発生していました。**
+- **原因**: Updater は `PlatformTarget=AnyCPU` でビルドされていますが、.NET Framework の exe は **`Prefer32Bit` の既定が true** のため 32bit プロセスとして起動します。一方 Manager は Bundle v0.9.0（#258）で .NET 10 の **64bit 単一ファイル**になりました。32bit の Updater からは 64bit の Manager プロセスの `MainModule` を読めず（「32 ビット プロセスは、64 ビット プロセスのモジュールにアクセスできません」）、`ProcessWaiter` がこれを **「Manager は既に終了済み」と誤判定**して待機を skip → Manager が起動したまま `Manager` → `Manager.bak` の rename に進む → アクセス拒否 → ロールバックして「内部エラー」。
+- **対処 1（原因）**: `Prefer32Bit=false` を明示し、Updater を 64bit で動かすようにしました。
+- **対処 2（同種の再発防止）**: `MainModule` を読めなかったときに**「識別できない」を「終了済み」と読まない**ようにしました。判定を諦める方向の「安全側」は kill の話であって、待機の話ではありません。プロセス名の一致は直前に確認済みなので、**同名プロセスが生きている以上は待つ**方に倒します。待って空振りしても最悪 timeout で止まるだけですが、待たずに進むと上記の静かな不整合を作ります（kill は `--force-kill` 指定時のみで、Manager は常に `forceKill: false` を渡すため、この経路で無関係プロセスを kill することはありません）。
+- **修正版は自分で配れます。`Install.bat` での入れ直しは不要です**: Manager の更新フローは `Companions/Updater` を置換してから（Step 9）Updater を起動する（Step 10）ため、次回のアプリ内アップデートでは**修正版の 64bit Updater が使われます**。この順序は壊れている install に入っている古い Manager（v0.9.0 の 0.27.9）にも既にあることを、リリースタグ `v0.9.0` のコードで確認済みです。
+- **「最新版を実行中です」の誤表示は未修正のまま残ります**（別 issue）。CHANGELOG.md のコピーは「Updater の **spawn 成功**後」に後置されていますが、spawn した Updater が**その後で**失敗するケースは想定されていません。そのため CHANGELOG だけ新しくなり、`ReadBundleVersion` が新版数を返して「最新版を実行中」と判定されます。判定を CHANGELOG ではなく **Manager 自身のアセンブリ版数**から行うか、`TryLoadLastExitCode` が失敗を示すときは UpToDate と判定しない、のいずれかが要ります。
+- bump 判断: bugfix のみ。**patch（v0.2.1 → v0.2.2）**。
+
 ### [LauncherAgent v0.3.0] - 2026-06-12
 
 #### Changed (#258 PR4.x — net48 → net10 + self-contained single-file)

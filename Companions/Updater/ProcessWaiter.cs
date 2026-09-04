@@ -265,9 +265,25 @@ namespace TonePrism.Updater
                     }
                     catch (System.ComponentModel.Win32Exception ex)
                     {
-                        Logger.Info($"PID={callerPid} の MainModule access denied ({ex.Message})、安全側で Manager 既終了扱い (識別不能 PID は kill しない方針)");
-                        try { p.Dispose(); } catch { }
-                        return new Process[0];
+                        // **「識別できない」を「終了済み」と読んではいけない** (#440)。
+                        //
+                        // 旧実装はここで空配列を返し、Manager が動いたままでも「既に終了済み」として
+                        // 待機を skip していた。その結果 Manager dir の rename がアクセス拒否で失敗し、
+                        // ロールバックして「内部エラー」になる — しかも Launcher / CHANGELOG は先に
+                        // 置換済みなので、**Manager だけ古いまま「最新版を実行中」と表示される**
+                        // 静かな不整合に落ちる。実際に Bundle v0.9.0 以降ずっとこれが起きていた。
+                        //
+                        // 判定を諦める方向の「安全側」は kill の話であって、待機の話ではない。
+                        // ここまでで [1] ProcessName の一致は確認済みなので、**同名プロセスが生きている
+                        // 以上は待つ**方に倒す。待って空振りしても最悪 timeout で止まるだけだが、
+                        // 待たずに進むと上記の不整合を作る。
+                        //
+                        // kill は `--force-kill` 指定時のみで、Manager (UpdaterClient.Spawn) は常に
+                        // forceKill: false を渡すため、この経路で無関係プロセスを kill することはない。
+                        Logger.Warn($"PID={callerPid} の MainModule を読めませんでした ({ex.Message})。"
+                            + " プロセス名は一致しているため Manager が起動中とみなして待機します"
+                            + " (kill はしません)。Updater が 32bit で動いている場合はこの経路に入ります (#440)");
+                        return new[] { p };
                     }
                     catch (InvalidOperationException)
                     {
