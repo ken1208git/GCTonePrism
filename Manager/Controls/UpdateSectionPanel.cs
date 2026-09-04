@@ -142,6 +142,24 @@ namespace TonePrism.Manager.Controls
                     btnSkip.Enabled = false;
                     break;
                 case UpdateCheckStatus.UpToDate:
+                    // (#440) **前回のアップデートが失敗しているなら「最新版」ではない。**
+                    //
+                    // 現在の Bundle 版数は CHANGELOG.md から読む。ところが CHANGELOG は Updater の
+                    // spawn 成功後に置換されるため、spawn した Updater が**その後で**失敗すると
+                    // (= Manager dir の置換失敗) CHANGELOG だけ新しくなる。すると UpToDate と判定され、
+                    // 「最新版を実行中です」+ **「今すぐアップデート」が無効** になり、user は UI から
+                    // 再試行する手段を失う (実際 v0.10.0 / v0.11.0 でこの状態に陥った)。
+                    //
+                    // Updater の終了コードは失敗を正しく記録しているので、それを見て判定を覆す。
+                    // ここで再試行を許すのは安全側 — 既に最新なら適用しても同じ内容が入るだけ。
+                    if (IsPreviousUpdateFailed())
+                    {
+                        lblStatusMessage.Text = "前回のアップデートが完了していません。もう一度お試しください。";
+                        lblStatusMessage.ForeColor = System.Drawing.Color.DarkRed;
+                        btnUpdateNow.Enabled = true;
+                        btnSkip.Enabled = false;
+                        break;
+                    }
                     // (#170 followup) cache 経由判定の場合、実 GitHub 最新と比較できていないため
                     // 緑文字「最新版を実行中」と断言すると過信させすぎ。stale cache 時は灰色 + 文言
                     // を「キャッシュ比較、再確認失敗中」に降格して信頼度を視覚化。
@@ -301,6 +319,17 @@ namespace TonePrism.Manager.Controls
             if (hour < 24) return hour + " 時間";
             long day = hour / 24L;
             return day + " 日";
+        }
+
+        /// <summary>
+        /// (#440) 前回の Updater 実行が失敗していたか。sentinel の終了コードから判定する。
+        /// 記録が無い (= 一度もアップデートしていない / 読めない) 場合は false (= 失敗扱いしない)。
+        /// </summary>
+        private static bool IsPreviousUpdateFailed()
+        {
+            int? exitCode = UpdaterClient.TryLoadLastExitCode();
+            if (!exitCode.HasValue) return false;
+            return UpdaterClient.DispatchExitCode(exitCode.Value).Severity != ExitSeverity.Success;
         }
 
         private void ShowPreviousUpdateBanner(int exitCode)
