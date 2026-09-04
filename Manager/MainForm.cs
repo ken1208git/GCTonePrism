@@ -1301,13 +1301,24 @@ namespace TonePrism.Manager
             // (Release.ps1 の Assert-PublishedManagerVersion) が一致を強制しているのも 3-part までで、
             // revision だけ drift しても公開は通る。4-part で比べると、その場合に全ユーザーが
             // 偽の「✗ アップデート未完了」を食らう。ゲートと同じ粒度にしておく。
+            bool expectedParsed = Version.TryParse(expectedManagerVersion, out expectedVer);
+            // (レビュー 5) parse 失敗は「不一致なし」に倒れる = 版数照合が丸ごと効かない。
+            // sentinel の newManagerVersion は FileVersionInfo.FileVersion 由来で、null や
+            // "0.34.1.0 (rel)" のような非 Version 文字列になりうる (staging の exe を直接読むこの経路には
+            // Release.ps1 の [version] 検証が効かない)。他の 2 レグが残るので silent pass にはならないが、
+            // 「照合が効いていない」ことが誰にも見えないのは駄目なので必ずログに残す。
+            if (!string.IsNullOrEmpty(expectedManagerVersion) && !expectedParsed)
+            {
+                Services.Logger.Warn("[MainForm] (#440) 申し送りの newManagerVersion を Version として解釈できません"
+                    + " (版数照合を skip、終了コードと結果ファイルの有無で判定します): " + expectedManagerVersion);
+            }
             bool versionMismatch = !string.IsNullOrEmpty(expectedManagerVersion)
                 && running != null
-                && Version.TryParse(expectedManagerVersion, out expectedVer)
+                && expectedParsed
                 && running.ToString(3) != expectedVer.ToString(3);
             // (#440) 一次情報は Updater が書き残した実行結果。無い場合 (旧 Updater) だけ、従来の
             // ログ推測にフォールバックする。ログ推測は「末尾 20 行に [ERROR] があれば失敗」+「直近 2 分」
-            // というヒューリスティックで、致命的でない Error 行で誤判定するうえ失敗の翌朝には読めない。
+            // というヒューリスティックで、文言依存で壊れるうえ失敗の翌朝には読めない。
             var runResult = Services.UpdaterClient.TryLoadUpdateResult();
             int? exitCode = (runResult != null && runResult.ExitCode.HasValue)
                 ? runResult.ExitCode
@@ -1389,8 +1400,8 @@ namespace TonePrism.Manager
             // 本メソッドは MainForm_Load 冒頭 (:384) で走り、アップデートタブの Initialize (:685) より
             // 先に到達する。ここで成功記録を消すと、タブ側が「結果ファイルの有無」を先に見る防御
             // (IsPreviousUpdateFailed) が常に「無い」を観測し、旧 Updater 用のログ推測へ落ちる。
-            // すると Step 4 の best-effort な .bak 削除失敗 ([ERROR]) を拾って「前回のアップデートが
-            // 完了していません」を出す — 数秒前にこのダイアログが「✓ 完了」と言った同じ起動で。
+            // ログ推測は「直近 2 分の窓」+「末尾 20 行に [ERROR]」という当てにならない判定なので、
+            // 成功した更新について何を答えるかが保証されない。
             //
             // 削除は消費者 (UpdaterClient.HasUnresolvedFailure) に一本化する。タブが必ず起動時に
             // 読むので、成功記録はこの直後に消える。仮にタブまで到達しなくても、成功記録が残って

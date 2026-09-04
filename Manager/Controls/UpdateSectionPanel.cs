@@ -53,6 +53,23 @@ namespace TonePrism.Manager.Controls
                 ? lastRun.ExitCode
                 : UpdaterClient.TryLoadLastExitCode();
 
+            // (レビュー 3) **ここで無条件に 1 回評価する。**
+            // 成功記録の削除は IsPreviousUpdateFailed → HasUnresolvedFailure の成功経路にしか無い。
+            // これを ApplyResult の `UpToDate` 分岐の中だけで呼ぶと、Initializing / UnknownBundle /
+            // UpdateAvailable / Skipped / CheckFailed では一度も評価されず成功記録が残る
+            // (cache 不在時は LoadCacheOnly が Initializing を直接返すので、実際に起きる)。
+            // 残った exit 0 は後続の失敗を隠す — MainForm の updaterLeftNoTrace は「結果ファイルが無い」
+            // を条件にしているので発火せず、exitFailed も false になり、塞いだはずの行き止まりが戻る。
+            // 「必ず読まれる」という前提を条件分岐の内側に置かない。結果はキャッシュされるので
+            // ApplyResult 側の呼び出しと二重評価にはならない。
+            //
+            // **戻り値を捨てる裸の呼び出しにはしない** — 見た目が no-op なので、将来「これ消しても
+            // いいよね」で消される。副作用 (成功記録の消費) が本体であることを分かる形にする。
+            if (IsPreviousUpdateFailed())
+            {
+                Services.Logger.Info("[UpdateSectionPanel] 前回のアップデートが未完了のまま残っています (再試行を有効化)");
+            }
+
             // 起動時 hydrate (cache から「前回確認時の状態」を即時表示)
             UpdateCheckResult cached = _updateChecker.LoadCacheOnly();
             ApplyResult(cached);
@@ -347,8 +364,8 @@ namespace TonePrism.Manager.Controls
             // **結果ファイルの有無を先に見る (レビュー High-2)。** `HasUnresolvedFailure` は成功 /
             // 読取不能 / 解消済みのどの経路でもファイルを削除するので、その後に不在を見ても
             // 「新 Updater が結果を残した」と「旧 Updater だった」を区別できない。順序が逆だと、
-            // 更新成功の直後に旧ログ推測へ落ち、Step 4 の best-effort な .bak 削除失敗 (Logger.Error) を
-            // 拾って「前回のアップデートが完了していません」を出す — 数秒前に「✓ 完了」を出した同じ画面で。
+            // 更新成功の直後に旧ログ推測へ落ちる。ログ推測は「直近 2 分の窓」+「末尾 20 行に [ERROR]」
+            // という当てにならない判定なので、成功した更新について何を答えるかが保証されない。
             bool failed;
             if (UpdaterClient.UpdateResultFileExists())
             {
@@ -425,8 +442,17 @@ namespace TonePrism.Manager.Controls
         private void btnUpdateNow_Click(object sender, EventArgs e)
         {
             Services.Logger.Info("[UpdateSectionPanel] btnUpdateNow_Click");
-            if (_currentResult == null || _currentResult.Latest == null) { Services.Logger.Warn("[UpdateSectionPanel] _currentResult / Latest が null、abort"); return; }
-            if (_currentResult.Latest.Version == null) { Services.Logger.Warn("[UpdateSectionPanel] Latest.Version が null、abort"); return; }
+            // (レビュー 4) **無言 return にしない。** 前回失敗時はこのボタンを強制的に有効へ戻すが、
+            // その状態でも `Latest` は null でありうる (ComputeStatus は latest=null でも UpToDate に倒れる)。
+            // ログだけ書いて黙って戻ると「押せるのに何も起きない」= 別の行き止まりを作る。
+            // 下の ZipAssetUrl 空チェックと対称に、理由を画面に出す。
+            if (_currentResult == null || _currentResult.Latest == null || _currentResult.Latest.Version == null)
+            {
+                Services.Logger.Warn("[UpdateSectionPanel] 最新リリース情報が無い状態で更新開始、abort");
+                MessageBox.Show("最新版の情報を取得できていません。「更新を確認」を押してから、もう一度お試しください。",
+                    "アップデート中止", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             if (string.IsNullOrEmpty(_currentResult.Latest.ZipAssetUrl))
             {
                 Services.Logger.Warn("[UpdateSectionPanel] ZipAssetUrl 空、abort");

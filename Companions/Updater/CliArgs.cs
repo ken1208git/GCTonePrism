@@ -234,7 +234,7 @@ namespace TonePrism.Updater
                 "  6  新 Manager.exe の起動に失敗、または置換後の版数が持ち込んだものと不一致 (#440) (Process.Start null/throw、spawn 直後 early-crash、restart-exe 不在 等。失敗時は .bak から旧 Manager を自動復元、round 6 Codex P1 + Medium-5)\n" +
                 "  7  force-kill 試行が bounded retry (3 回) 上限超過 (permission denied 等、機械的再試行は無意味)\n" +
                 "  8  process enumeration 連続失敗 (5 回、IPC/WMI 一時障害、短時間後の再試行で回復見込み)\n" +
-                "  9  Manager プロセスの同一性を確認できないまま上限 (60 秒) に達した (#440。手動で Manager を閉じてから再試行。--force-kill は勧めない = 同一性未確認のプロセスは kill しない方針なので、強制終了で再試行しても同じところに戻る行き止まりになる)\n";
+                "  9  Manager プロセスの同一性を確認できないまま上限 (45 秒) に達した (#440。手動で Manager を閉じてから再試行。--force-kill は勧めない = 同一性未確認のプロセスは kill しない方針なので、強制終了で再試行しても同じところに戻る行き止まりになる)\n";
         }
     }
 }

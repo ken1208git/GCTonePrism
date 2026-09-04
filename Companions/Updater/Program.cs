@@ -38,7 +38,7 @@ namespace TonePrism.Updater
     ///       round 6 Codex P1 + Medium-5 で失敗時に RollbackFromBak で旧 Manager 復元)
     ///   7 = force-kill 試行 bounded retry (3 回) 超過 (permission denied 等の構造的問題、機械的再試行は無意味)
     ///   8 = process enumeration 連続失敗 (5 回、IPC/WMI 一時障害、短時間後の再試行に意味あり)
-    ///   9 = Manager プロセスの同一性を確認できないまま上限 (60 秒) に達した (#440)。
+    ///   9 = Manager プロセスの同一性を確認できないまま上限 (45 秒) に達した (#440)。
     ///       **exit 3 と分けてある**: 3 の推奨アクションは「強制終了して再試行」だが、この経路は
     ///       同一性未確認のプロセスを kill しない方針なので、案内どおり操作すると同じところに戻る
     ///       行き止まりループになる。9 は「手動で Manager を閉じてから再試行」に倒す

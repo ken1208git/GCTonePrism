@@ -182,8 +182,8 @@ namespace TonePrism.Manager.Services
         ///
         /// Manager は Updater の**プロセス終了コードを受け取れない** (受け取るには待つ必要があるが、
         /// 待っていると dir を置換できない)。そのため従来は「ログ末尾 20 行に `[ERROR]` があれば失敗」
-        /// という推測をしていた。ログは人間向けの副産物であって API ではなく、致命的でない Error 行で
-        /// 誤判定するうえ「どの実行の話か」も分からない (だから直近 2 分という窓が要った)。
+        /// という推測をしていた。ログは人間向けの副産物であって API ではなく、**文言を変えた人が判定を
+        /// 壊せる**うえ「どの実行の話か」も分からない (だから直近 2 分という窓が要った)。
         /// Updater が答えを持っているのだから、解析で復元せず**消えない場所に書いてもらう**。
         /// </summary>
         public sealed class UpdateRunResult
@@ -346,8 +346,10 @@ namespace TonePrism.Manager.Services
         /// `[ERROR]` があれば失敗とみなして exit code を推測する。
         ///
         /// **`TryLoadUpdateResult` が使えないときだけの fallback** (= 旧 Updater で実行結果ファイルが
-        /// 無いケース)。致命的でない `Logger.Error` でも失敗に倒れ、「どの実行の話か」も分からないため
-        /// 2 分窓が必要という、二重に当てにならない推測。
+        /// 無いケース)。判定が「末尾 20 行に `[ERROR]`」という**文言依存**で、「どの実行の話か」も
+        /// 分からないため 2 分窓が必要という、二重に当てにならない推測。
+        /// **現状 `[ERROR]` が出るのは全て非 0 return 経路**なので偶然成立しているが、
+        /// 非致命箇所に `Logger.Error` を 1 本足した瞬間に成功した更新が失敗へ倒れる。
         /// **新しい判定はすべて <see cref="TryLoadUpdateResult"/> を一次情報にすること (#440)。**
         /// </summary>
         public static int? TryLoadLastExitCode()

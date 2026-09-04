@@ -23,7 +23,8 @@ namespace TonePrism.Updater
         EnumerationFailed,
         /// <summary>
         /// (#440) Manager プロセスの**同一性を確認できない状態**が <see cref="UnidentifiedCapSeconds"/> 続いた
-        /// (→ exit 3 と同じ扱い、user 介入経路へ倒す)。
+        /// (→ **exit 9**、user 介入経路へ倒す。exit 3 と分けるのは、3 の推奨アクション = 強制終了して再試行が
+        /// この経路では必ず同じ所へ戻る行き止まりになるため)。
         ///
         /// 生きているが `MainModule` を読めないプロセス (権限差・AV による module 列挙阻害等) に当たると、
         /// 「終了済みと誤判定して置換に進む」(= #440 の静かなデータ不整合) と「永久に待つ」(= 管理ソフトが
@@ -77,7 +78,14 @@ namespace TonePrism.Updater
         /// (`UpdaterClient`)、ここを timeout 任せにすると識別不能ケースで永久ループになる。Manager は既に
         /// 終了処理へ入っていて UI が無いので、ユーザーからは「管理ソフトが消えたまま何も起きない」に見える。
         /// </summary>
-        private const int UnidentifiedCapSeconds = 60;
+        /// **(レビュー 9) 既定 `--wait-timeout` (60s) より小さくしてある。** 同値だと、CLI から既定値で
+        /// 走らせたとき識別不能の 60 秒と timeout の 60 秒のどちらが先に発火するかが「いつ識別不能に
+        /// なったか」次第になる。timeout 側が勝つと exit 3 が返り、その案内 (`--force-kill` を付けて再試行)
+        /// に従うと下の `forceKill && unidentified` ガードで必ず exit 9 に落ちる = 1 往復無駄になる。
+        /// 小さくしておけば「識別不能の方が必ず先に判定される」を機械的に保証できる。
+        /// (明示的に 45s 未満を渡した場合は timeout が勝つが、それは呼び出し側の明示的な選択。
+        ///  Manager は常に `--wait-timeout 0` を渡すので通常運用はどちらにせよ本上限のみが効く。)
+        private const int UnidentifiedCapSeconds = 45;
 
         /// <summary>
         /// Manager プロセスが全て終了するまで polling で待機する。
@@ -322,9 +330,16 @@ namespace TonePrism.Updater
                         // InvalidOperationException (process exited)、NotSupportedException (rare)。
                         actualPath = p.MainModule != null ? p.MainModule.FileName : null;
                     }
-                    catch (System.ComponentModel.Win32Exception ex)
+                    catch (Exception ex) when (ex is System.ComponentModel.Win32Exception
+                                            || ex is NotSupportedException)
                     {
                         // **「識別できない」を「終了済み」と読んではいけない** (#440)。
+                        //
+                        // (レビュー 10) `NotSupportedException` も同じ経路に寄せる。上の doc が投げうると
+                        // 列挙しているのに捕まえていなかったため、外側の catch(Exception) に流れて
+                        // 「enumeration の一時障害」として計上され exit 8 (= 短時間後の再試行で回復見込み)
+                        // になっていた。同じ「MainModule が読めない」事象が例外の種類で exit 8 と exit 9 に
+                        // 割れるうえ、exit 8 の案内はこのケースでは誤り (待っても直らない)。
                         //
                         // 旧実装はここで空配列を返し、Manager が動いたままでも「既に終了済み」として
                         // 待機を skip していた。その結果 Manager dir の rename がアクセス拒否で失敗し、
