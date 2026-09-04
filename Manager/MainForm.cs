@@ -642,7 +642,8 @@ namespace TonePrism.Manager
             MakeMainFormVisible();
             if (!string.IsNullOrEmpty(crashMessage))
             {
-                try { MessageBox.Show(this, crashMessage, "起動エラー", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                // (レビュー M-4) 可視化が失敗している可能性があるので `this` 直渡しにしない。
+                try { MessageBox.Show(VisibleModalOwnerOrNull(), crashMessage, "起動エラー", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                 catch { /* fallback ダイアログ自体の失敗は無視 */ }
             }
         }
@@ -882,6 +883,12 @@ namespace TonePrism.Manager
                 shellShown = true;
                 Shell.SplashScreenHost.Close(); // (#246) スプラッシュを閉じる
                 Hide(); // Load 完了済なので Hide で安全に裏方化 (= MainForm の窓・タスクバーボタンを消す)
+                // (レビュー M-3) **Opacity も戻す。** 起動時競合ゲートは MakeMainFormVisible で
+                // Opacity=1 にするが、そのままだと「Hide が Load 境界を越えず post-Load に再表示される」
+                // 場合に**未初期化の旧 UI がシェルと並んで完全に見える**二重 UI になる (本 PR 前は
+                // 同じ再表示が Opacity=0 で不可視だった = 新規の退行)。SPEC §3.8.2.1 の「どちらに
+                // 転んでも成立する」根拠 (条件 2 = Opacity > 0) もこれで保たれる。
+                Opacity = 0;
 
                 // (#449) **`Hide()` が Load 境界を越えて維持されるかを実機で確定するための診断ログ。**
                 // レビューでは複製アプリ 6 構成すべてで「post-Load に再表示される」(Visible=True /
@@ -913,7 +920,11 @@ namespace TonePrism.Manager
                 // #449 で `MakeMainFormVisible` が無条件 `Show()` + `Activate()` に変わったため可視化は
                 // される。実際の帰結は「死蔵」ではなく**シェルと MainForm の二重 UI**であり、
                 // フォールバックしない理由はそちら。
-                // 外側 catch は「シェル生成 / Show 失敗 (= MainForm 未 Hide)」専用に限定する。
+                // (レビュー L-1) **ただし外側 catch は実際には限定できていない** — Show 成功後の
+                // SplashScreenHost.Close() / Hide() も覆っている。そこで throw すると shellShown=true なので
+                // Instance は残るが FallbackToVisibleMainForm は走り、シェル可視のまま MainForm も
+                // 可視化されて二重 UI になる (ログも「シェル表示に失敗」と嘘を出す)。到達性は低い
+                // (Close は fail-open) ため許容するが、限定できている前提で読まないこと。
                 try
                 {
                     // 別スレッドのスプラッシュがフォアグラウンドを握る + Hide() でフォアグラウンドが逃げるため、
@@ -1072,7 +1083,7 @@ namespace TonePrism.Manager
         /// 可視 owner を作ってから渡すこと。
         /// </para>
         /// </summary>
-        private IWin32Window VisibleModalOwnerOrNull()
+        internal IWin32Window VisibleModalOwnerOrNull()
         {
             // [0] **今アクティブな可視モーダルがあればそれを最優先 (レビュー High-2)。**
             //     ゲーム追加 / 編集フォームは `ShowDialog(ShellOwner.For(shell))` で開かれ、その間
@@ -1095,12 +1106,21 @@ namespace TonePrism.Manager
             //     同じ「見えない Manager が更新を阻害する」状態を自分で作ることになる。
             //     あわせて `Modal` も要求する（非モーダルの active Form は owner-modal の前提を満たさない）。
             Form active = Form.ActiveForm;
-            if (active != null && active != this && !active.IsDisposed
+            bool activeIsUsableModal = active != null && active != this && !active.IsDisposed
                 && active.IsHandleCreated && active.Modal
-                && !(active is ProcessingDialog)
-                && NativeVisibility.IsWindowVisible(active.Handle))
+                && NativeVisibility.IsWindowVisible(active.Handle);
+            if (activeIsUsableModal && !(active is ProcessingDialog))
             {
                 return active;
+            }
+            if (activeIsUsableModal)
+            {
+                // (レビュー M-2) **除外した active モーダルがあるなら、シェルに落とさず null を返す。**
+                // ProcessingDialog は `ShowDialog(owner = シェル)` されうるので、その時点でシェルは
+                // 既に `EnableWindow(false)`。そこへシェルを owner とする MessageBox を出して閉じると、
+                // 破棄時の `EnableWindow(true)` でシェルが再有効化され、**step [0] が防ごうとしていた
+                // 再入が別経路で開く**。owner を諦める方が、無効化されている窓を owner にするより安全。
+                return null;
             }
 
             // [1] 可視シェル。WPF Window は既定で ShowInTaskbar=true なので戻す導線がある。
@@ -1149,7 +1169,8 @@ namespace TonePrism.Manager
         /// </summary>
         private void MakeMainFormVisible()
         {
-            try { Shell.SplashScreenHost.Close(); } catch { }
+            try { Shell.SplashScreenHost.Close(); }
+            catch (Exception ex) { Logger.Warn("[MainForm] スプラッシュの close に失敗 (継続): " + ex.Message); }
             try
             {
                 this.Opacity = 1;
@@ -1163,7 +1184,14 @@ namespace TonePrism.Manager
                 // 来ないため、ShowShellAsMain と同じく明示的に前へ出す。
                 Activate();
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // (レビュー M-4) **握り潰さない。** ここが失敗すると (1) 起動ゲートで
+                // VisibleModalOwnerOrNull が null に落ちて #449 と同じ状態に戻り、
+                // (2) FallbackToVisibleMainForm のクラッシュ通知そのものが到達不能モーダルになる。
+                // 復旧の最後の砦が無言で壊れるので、痕跡は必ず残す。
+                Logger.Warn("[MainForm] MainForm の可視化に失敗 (モーダルが前面に出ない可能性): " + ex.Message);
+            }
         }
 
         /// <summary>

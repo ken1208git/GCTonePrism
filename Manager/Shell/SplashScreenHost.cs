@@ -11,7 +11,7 @@ namespace TonePrism.Manager.Shell
     ///
     /// 設計: **fail-open**。全メソッドは例外を握り潰し、スプラッシュ障害で起動 (= 心臓部) を絶対に
     /// 止めない。スレッドは IsBackground=true なので、万一閉じ損ねてもプロセス exit で道連れに落ちる。
-    /// 非トップモスト (`Topmost="False"`) だが、**フォアグラウンドは握る**。したがって起動中モーダル (更新完了・DB 作成確認・セッション競合) が前面に出ることは保証されない — 実際 #449 で スプラッシュの背後にダイアログが埋もれて 8 分間固まった。**モーダルの前面性・到達可能性は owner 側で担保する**こと (SPEC §3.8.2.1 / `MainForm.VisibleModalOwnerOrNull`)。
+    /// 非トップモスト (`Topmost="False"`) だが、**フォアグラウンドは握る**。したがって起動中モーダルが前面に出ることは保証されない (更新完了 / DB 作成確認 は現在も owner を渡していない = SPEC §3.8.2.1 の「未解決」に分類。#449 で owner を付け直したのは更新通知と競合ゲート) — 実際 #449 で スプラッシュの背後にダイアログが埋もれて 8 分間固まった。**モーダルの前面性・到達可能性は owner 側で担保する**こと (SPEC §3.8.2.1 / `MainForm.VisibleModalOwnerOrNull`)。
     /// </summary>
     internal static class SplashScreenHost
     {

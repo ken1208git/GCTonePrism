@@ -1378,6 +1378,8 @@ Release.ps1 と一致 (caller CI は `%ERRORLEVEL%` で 4 通り区別):
 1. **タスクバーから辿れること** — 物理的に表示済みで、自身または owner 連鎖の先がタスクバーに出ている
 2. **ユーザーが視認できること** — `Opacity > 0`
 
+**条件 1 は現状、機械的には検査していない**（MainForm / WPF Window とも `ShowInTaskbar` の既定が true であることに依存）。将来 `ShowInTaskbar=false` の窓を owner 候補に加えるなら検査を足すこと。
+
 条件 1 だけでは足りない（レビュー指摘）。`Opacity = 0` の窓はタスクバーボタンを持ちうるが、ユーザーには「押しても何も見えない」ので、モーダルの所在を伝える窓としては機能しない。実装 `VisibleModalOwnerOrNull` の `Opacity > 0` はこの条件 2 に対応する。
 
 ##### 機序
@@ -1403,7 +1405,10 @@ WinForms の `MessageBox.Show` / `Form.ShowDialog` は **owner が `null` のと
 ##### 実装
 
 - `MainForm.VisibleModalOwnerOrNull()`: **4 段**で返す。
-  1. **今アクティブな可視 Form (`Form.ActiveForm`、自分自身は除く)** — これを最優先にするのは、Win32 の MessageBox が**破棄時に owner を `EnableWindow(true)` する**ため。ゲーム追加 / 編集フォームは `ShowDialog(ShellOwner.For(shell))` で開かれシェルを無効化しているので、内側から出すモーダルの owner をシェルにすると、**閉じた瞬間にシェルが再有効化され、編集フォームが開いたままシェルを操作できてしまう**（別種の再入）。内側のモーダルを owner にすれば入れ子が壊れない。なおこの Form は可視シェルに owned なので、タスクバーのシェルのボタンから `GetLastActivePopup` で辿れる = 規約を満たす（**owned でない可視 Form が active な場合はこの根拠が崩れるので、その時は `ShowInTaskbar` か owner 連鎖の確認を足すこと**）
+  1. **今アクティブな可視 Form (`Form.ActiveForm`、自分自身は除く。`Modal == true` 必須)** — これを最優先にするのは、Win32 の MessageBox が**破棄時に owner を `EnableWindow(true)` する**ため。ゲーム追加 / 編集フォームは `ShowDialog(ShellOwner.For(shell))` で開かれシェルを無効化しているので、内側から出すモーダルの owner をシェルにすると、**閉じた瞬間にシェルが再有効化され、編集フォームが開いたままシェルを操作できてしまう**（別種の再入）。内側のモーダルを owner にすれば入れ子が壊れない。なおこの Form は可視シェルに owned なので、タスクバーのシェルのボタンから `GetLastActivePopup` で辿れる = 規約を満たす（**owned でない可視 Form が active な場合はこの根拠が崩れるので、その時は `ShowInTaskbar` か owner 連鎖の確認を足すこと**）
+     - **自分で閉じる窓は除外する**（現状 `ProcessingDialog`）。Win32 は owner 破棄時に所有窓を道連れにするため、worker 完了で自分自身を閉じるモーダルを owner にすると確認ダイアログが勝手に消え、`MessageBox.Show` が Yes 以外を返す。`MainForm_FormClosing` のバックアップ中止確認がこれに当たると `e.Cancel = true` で終了がキャンセルされ、シェルは既に閉じているので**窓が 1 つも無い Manager プロセスが生き残る**（#444 と同じ更新阻害状態）
+     - **除外に当たった場合はシェルへ落とさず `null` を返す**。除外対象のモーダルは `ShowDialog(owner = シェル)` されうるので、その時点でシェルは `EnableWindow(false)`。無効化されている窓を owner にすると、破棄時の `EnableWindow(true)` で step 1 が防ごうとした再入が別経路で開く
+     - 除外は現在**型判定**なので、将来別の自己クローズ型モーダルが増えると無言で同じ穴が開く。「呼び出し側が閉じるまで生存する窓か」を表す明示フラグへ寄せるのが望ましい（#457）
   2. **可視シェル** (`ShellWindow.Instance` かつ `IsVisible`)
   3. **物理的に表示されている MainForm** (`IsWindowVisible(Handle) && Opacity > 0`) — **`Control.Visible` は使わない**（下記）
   4. 該当なしなら `null`
@@ -1434,6 +1439,7 @@ after Show(): Visible=True  IsWindowVisible=True    ← 無条件 Show() なら�
 - **同 PC 重複起動の modal**（`Program.cs`「Manager は 1 つだけ起動できます」）— `Application.Run` より前で**窓が 1 つも存在しない**ため `GetActiveWindow()` は必ず 0 に倒れ、top-level = 到達可能。**未解決ではなく「安全と確認済み」**（#444 でこの modal がプロセスを 2 分 42 秒生かして更新を阻害した実績があるが、それは到達可能性とは別の問題で #447）
 - **ログ保存先の移行通知 (#201)** — `this` 直渡しはやめたが、呼び出しがシェル生成前なので `VisibleModalOwnerOrNull()` は `null` を返す
 - **起動時のアップデート通知で「はい」を押してもシェルが遷移しない (#456)** — 実装が `Opacity = 0` / `Hide()` 済み MainForm のタブ切替のままで、#245 の置き去り経路。**本件は #449 とは無関係に #245 以降ずっと壊れている**（旧順序でも MainForm はユーザーに見える形で表示されないため、cache の温冷に関わらず「はい」の効果は見えなかった）。唯一動くのはシェル生成失敗のフォールバック経路（MainForm が可視でタブがある）
+- **設定パネル由来のダイアログ（DB リセットの確認 / 進捗 / フォルダ削除失敗）** — #449 で `MainForm.VisibleModalOwnerOrNull()` 経由に変更済み。設定は #362 で WPF ネイティブ化されたため本パネルだけシェルにホストされず、`Hide()` 済み MainForm の子のまま残っていた（破壊的な DB 全削除の確認中にシェルを操作できる擬似モーダル + 長い処理中に見失うと戻せない、の両方を踏んでいた）
 - **バックアップ中止の終了確認** — シェルの `Closed` ハンドラが先に `Instance = null` を実行してから MainForm の `Close()` に入るため、`VisibleModalOwnerOrNull()` の step 2 は落ちる。step 1 (`Form.ActiveForm`) が拾える可能性はあるが、シェルが閉じた後なので保証はない
 
 #### 3.8.3 同 PC 重複起動 block (Named Mutex)
