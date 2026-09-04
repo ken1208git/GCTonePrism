@@ -164,6 +164,12 @@ namespace TonePrism.Updater
                 case WaitResult.ForceKillExhausted:
                     Logger.Error("force-kill 試行が bounded retry 上限に達して abort。permission denied 等の構造的問題、機械的再試行では解決しません。");
                     return 7;
+                case WaitResult.UnidentifiableTimeout:
+                    // (#440) 生きているが同一性を確認できない Manager。「終了済みと誤判定して置換に進む」
+                    // (静かなデータ不整合) と「永久に待つ」(管理ソフトが消えたまま戻らない) の両方を避け、
+                    // Manager dir に触らずに降りる。exit 3 = user 介入経路 (手動 close 後に再試行) に倒す。
+                    Logger.Error("Manager プロセスの同一性を確認できませんでした。データを壊さないため置換を中止します。管理ソフトを手動で閉じてから、もう一度お試しください。");
+                    return 3;
                 case WaitResult.EnumerationFailed:
                     Logger.Error("process enumeration が連続失敗で abort。IPC/WMI 一時不調の可能性、短時間後の再試行で回復するケースあり。");
                     return 8;

@@ -15,6 +15,8 @@ namespace TonePrism.Manager.Tests
         {
             public string CompletedAt { get; set; }
             public string NewVersion { get; set; }
+            /// <summary>(#440) 置換後に起動しているはずの Manager の FileVersion。旧 sentinel には無い。</summary>
+            public string NewManagerVersion { get; set; }
         }
 
         [Fact]
@@ -38,6 +40,33 @@ namespace TonePrism.Manager.Tests
             var back = JsonCompat.Deserialize<CamelWireDto>(json);
             Assert.Equal("T", back.CompletedAt);
             Assert.Equal("9.9.9", back.NewVersion);
+        }
+
+        [Fact]
+        public void Sentinel_NewManagerVersion_RoundTrips()
+        {
+            // (#440) 起動時の完了検証は「NewManagerVersion が非空で読めること」に全面的に乗っている。
+            // マッピングが壊れると null になり、検証が黙って skip されて従来どおり「✓ 完了」が出る
+            // = この修正が潰そうとしている silent pass の形でそのまま退行する。wire contract を固定する。
+            string json = JsonCompat.Serialize(new { completedAt = "T", newVersion = "0.11.1", newManagerVersion = "0.34.1.0" });
+            Assert.Contains("newManagerVersion", json);
+            var back = JsonCompat.Deserialize<CamelWireDto>(json);
+            Assert.Equal("0.34.1.0", back.NewManagerVersion);
+            Assert.Equal("0.11.1", back.NewVersion);
+            Assert.Equal("T", back.CompletedAt);
+        }
+
+        [Fact]
+        public void Sentinel_WithoutNewManagerVersion_YieldsNull_ForBackwardCompatibility()
+        {
+            // 旧 sentinel (2 フィールド) を読んでも throw せず、NewManagerVersion が null になること。
+            // 起動側はこれを見て検証を skip する (後方互換)。null にならないと誤検知で
+            // 「✗ アップデート未完了」を出しかねない。
+            string oldJson = JsonCompat.Serialize(new { completedAt = "2026-09-04T00:00:00Z", newVersion = "0.11.0" });
+            var dto = JsonCompat.Deserialize<CamelWireDto>(oldJson);
+            Assert.NotNull(dto);
+            Assert.Equal("0.11.0", dto.NewVersion);
+            Assert.Null(dto.NewManagerVersion);
         }
 
         [Fact]

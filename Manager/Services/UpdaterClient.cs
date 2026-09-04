@@ -185,6 +185,40 @@ namespace TonePrism.Manager.Services
         /// **注意 (round 2 M8)**: 旧 docstring は「1 分以内」と書いていたが実装は `AddMinutes(-2)` (= 2 分)、
         /// round 1 H3 fix で書き直した際の追従漏れ。docstring を実装に揃えて訂正。
         /// </summary>
+        /// <summary>
+        /// (#440) 「前回のアップデートが未完了で終わった」ことを install dir に残す。
+        ///
+        /// <see cref="TryLoadLastExitCode"/> は **直近 2 分**の Updater ログしか見ない。ところが置換に失敗した
+        /// 場合 Updater は Manager を起動し直さない (restart は成功時のみ) ので、ユーザーが手動で管理ソフトを
+        /// 立ち上げるのは 2 分後とは限らず、翌朝ということもある。その時 exit code は読めず、CHANGELOG 由来の
+        /// 版数で「最新版を実行中」= ボタン無効に戻ってしまう (= #440 と同じ行き止まり)。
+        /// 時間に依存しない事実として残す。
+        /// </summary>
+        public static void MarkUpdateFailed()
+        {
+            try { File.WriteAllText(UpdateFailedMarkerPath, DateTime.Now.ToString("s"), System.Text.Encoding.UTF8); }
+            catch (Exception ex) { Logger.Warn("[UpdaterClient] 失敗マーカーの書込みに失敗 (継続): " + ex.Message); }
+        }
+
+        /// <summary>(#440) アップデートが完了したことを確認できたら消す。</summary>
+        public static void ClearUpdateFailedMark()
+        {
+            try { if (File.Exists(UpdateFailedMarkerPath)) File.Delete(UpdateFailedMarkerPath); }
+            catch (Exception ex) { Logger.Warn("[UpdaterClient] 失敗マーカーの削除に失敗 (継続): " + ex.Message); }
+        }
+
+        /// <summary>(#440) 未完了マーカーが残っているか。</summary>
+        public static bool HasUpdateFailedMark()
+        {
+            try { return File.Exists(UpdateFailedMarkerPath); }
+            catch { return false; }
+        }
+
+        private static string UpdateFailedMarkerPath
+        {
+            get { return Path.Combine(PathManager.BaseDirectory, ".update_failed"); }
+        }
+
         public static int? TryLoadLastExitCode()
         {
             string dir = PathManager.UpdaterLogDir;

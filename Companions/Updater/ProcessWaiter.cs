@@ -21,6 +21,16 @@ namespace TonePrism.Updater
         ForceKillExhausted,
         /// <summary>process enumeration が MaxEnumerationFailures (5 回) 連続で throw (→ exit 8、IPC/WMI 一時障害、短時間後再試行に意味あり)。round 5 M-3 で「連続 N 回失敗の早期 abort path 専用」に限定、timeout 経路では使わない (両者排他)</summary>
         EnumerationFailed,
+        /// <summary>
+        /// (#440) Manager プロセスの**同一性を確認できない状態**が <see cref="UnidentifiedCapSeconds"/> 続いた
+        /// (→ exit 3 と同じ扱い、user 介入経路へ倒す)。
+        ///
+        /// 生きているが `MainModule` を読めないプロセス (権限差・AV による module 列挙阻害等) に当たると、
+        /// 「終了済みと誤判定して置換に進む」(= #440 の静かなデータ不整合) と「永久に待つ」(= 管理ソフトが
+        /// 消えたまま戻らない) の両方を避ける必要がある。**待たずに進むのも、無限に待つのも駄目**なので、
+        /// 一定時間で諦めて Manager dir に触らずに降りる。呼び出し側は失敗として扱い、再試行できる。
+        /// </summary>
+        UnidentifiableTimeout,
     }
 
     /// <summary>
@@ -60,6 +70,16 @@ namespace TonePrism.Updater
         private const int MaxEnumerationFailures = 5;
 
         /// <summary>
+        /// (#440) 「生きているが同一性を確認できない」状態を待つ上限 (秒)。これを超えたら
+        /// <see cref="WaitResult.UnidentifiableTimeout"/> で降りる。
+        ///
+        /// **`--wait-timeout 0` (無制限) でもこの上限は効く。** Manager は通常経路で常に無制限を渡すため
+        /// (`UpdaterClient`)、ここを timeout 任せにすると識別不能ケースで永久ループになる。Manager は既に
+        /// 終了処理へ入っていて UI が無いので、ユーザーからは「管理ソフトが消えたまま何も起きない」に見える。
+        /// </summary>
+        private const int UnidentifiedCapSeconds = 60;
+
+        /// <summary>
         /// Manager プロセスが全て終了するまで polling で待機する。
         /// </summary>
         /// <param name="timeoutSeconds">timeout 秒数 (0 で無制限)</param>
@@ -73,6 +93,7 @@ namespace TonePrism.Updater
             int iter = 0;
             int forceKillAttempts = 0;
             int consecutiveEnumerationFailures = 0;
+            var unidentifiedSince = new Stopwatch();
 
             if (callerPid > 0)
             {
@@ -87,9 +108,12 @@ namespace TonePrism.Updater
             {
                 Process[] procs;
                 bool enumerationFailed = false;
+                bool unidentified = false;
                 try
                 {
-                    procs = GetTargetProcesses(callerPid, expectedExePath);
+                    // (#440) verboseLog: 識別不能の警告は待機継続ログと同じ間引き (500ms ごとに出すと
+                    // 無限待機時にログが 2 行/秒で肥大する)。
+                    procs = GetTargetProcesses(callerPid, expectedExePath, iter % LogEveryNIter == 0, out unidentified);
                     consecutiveEnumerationFailures = 0;  // 成功で reset
                 }
                 catch (Exception ex)
@@ -140,8 +164,37 @@ namespace TonePrism.Updater
                         }
                     }
 
+                    // (#440) 「生きているが同一性を確認できない」状態の上限。**timeout 判定より先に見る** —
+                    // 通常経路は `--wait-timeout 0` (無制限) なので、下の timeout 判定はこのケースを拾えない。
+                    if (unidentified)
+                    {
+                        if (!unidentifiedSince.IsRunning) unidentifiedSince.Restart();
+                        if (unidentifiedSince.Elapsed.TotalSeconds >= UnidentifiedCapSeconds)
+                        {
+                            Logger.Error($"Manager プロセスの同一性を {UnidentifiedCapSeconds} 秒間確認できませんでした。"
+                                + " 起動中のまま置換に進むとデータが不整合になるため、Manager dir には触らずに中止します"
+                                + " (管理ソフトを手動で閉じてから、もう一度お試しください)");
+                            return WaitResult.UnidentifiableTimeout;
+                        }
+                    }
+                    else
+                    {
+                        unidentifiedSince.Reset();
+                    }
+
                     if (timeoutSeconds > 0 && sw.Elapsed.TotalSeconds >= timeoutSeconds)
                     {
+                        if (forceKill && unidentified)
+                        {
+                            // (#440) 同一性を確認できていないプロセスは **kill しない**。ここを kill すると
+                            // 「同名 exe の別 install / 別権限の Manager を巻き添えで落とす」という、
+                            // path 検証がまさに防いでいる事故が読み取り不能ケースについてだけ復活する。
+                            // user 介入経路 (手動で閉じてから再試行) へ倒す。
+                            Logger.Error("timeout 経過。ただし Manager プロセスの同一性を確認できていないため"
+                                + " force-kill しません (別 install を巻き添えにしないため)。"
+                                + " 管理ソフトを手動で閉じてから、もう一度お試しください");
+                            return WaitResult.UnidentifiableTimeout;
+                        }
                         if (forceKill && !enumerationFailed)
                         {
                             forceKillAttempts++;
@@ -214,8 +267,9 @@ namespace TonePrism.Updater
         ///   いずれの検証で不一致でも「Manager 既終了 + PID 再利用」とみなして空配列扱い (= 待機 skip 経路)、
         ///   force-kill 対象から外す。
         /// </summary>
-        private static Process[] GetTargetProcesses(int callerPid, string expectedExePath)
+        private static Process[] GetTargetProcesses(int callerPid, string expectedExePath, bool verboseLog, out bool unidentified)
         {
+            unidentified = false;
             if (callerPid > 0)
             {
                 // PID-only モード: GetProcessById は対象不在で ArgumentException を投げるので捕捉して空配列扱い
@@ -280,9 +334,16 @@ namespace TonePrism.Updater
                         //
                         // kill は `--force-kill` 指定時のみで、Manager (UpdaterClient.Spawn) は常に
                         // forceKill: false を渡すため、この経路で無関係プロセスを kill することはない。
-                        Logger.Warn($"PID={callerPid} の MainModule を読めませんでした ({ex.Message})。"
-                            + " プロセス名は一致しているため Manager が起動中とみなして待機します"
-                            + " (kill はしません)。Updater が 32bit で動いている場合はこの経路に入ります (#440)");
+                        // (#440) 「識別できない」を「終了済み」と読まない。ただし**無限には待たない** —
+                        // caller が UnidentifiedCapSeconds で打ち切る。out で状態を伝える。
+                        unidentified = true;
+                        if (verboseLog)
+                        {
+                            Logger.Warn($"PID={callerPid} の MainModule を読めませんでした ({ex.Message})。"
+                                + " プロセス名は一致しているため Manager が起動中とみなして待機します"
+                                + " (同一性を確認できていないので kill 対象にはしません)。"
+                                + " Updater が 32bit で動いている場合はこの経路に入ります (#440)");
+                        }
                         return new[] { p };
                     }
                     catch (InvalidOperationException)
