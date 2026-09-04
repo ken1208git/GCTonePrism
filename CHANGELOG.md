@@ -1429,6 +1429,7 @@ SPEC §2.4 で定義される「主要 (Launcher / Manager / Monitor) を補助�
 
 - **`--caller-pid` 指定時も、同じ install から起動している Manager プロセスを全部待つ (#444)**。従来は caller の 1 PID だけを待機対象にしていた。これは round 2 P1 #1 で **他 install の Manager を巻き添えにしない**ために入れた設計だが、「**同一 install の別プロセスを無視してよい**」という意味ではなかった。exe path 一致で絞れば巻き添えリスクを増やさずにこの穴だけ塞げる。
 - 本番事故（2026-09-04、v0.11.1 の適用失敗）: 同 PC で 2 つ目の Manager が「1 つだけ起動できます」の modal を出したまま 2 分 42 秒生存し、caller だけを待った Updater が `Manager` → `Manager.bak` の rename でアクセス拒否になった。**同じ共有フォルダ上の Launcher / LauncherAgent / Companions/Updater / bat の置換はすべて成功しており**、権限や SMB の問題ではなく「そのフォルダだけ生きたプロセスが掴んでいた」ことが切り分けられた。
+- **同時に「永久待ち」の穴も塞いだ (#444)**。「同一 install の Manager を全部待つ」ようにすると、Manager が通常経路で渡す `--wait-timeout 0`（無制限）と組み合わさって、**残った 2 個目が永久に閉じられないと Updater が永久に待つ**という新しい詰み方が生まれる。しかも 2 個目が生きている典型的な理由は「1 つだけ起動できます」の modal を誰も押していないことなので、放っておいて閉じられる見込みが薄い。caller は既に終了していて画面が無いため、ユーザーからは「管理ソフトが消えたまま何も起きない」に見える — `UnidentifiedCapSeconds` を入れたのとまったく同じ理由なので、`OtherManagersCapSeconds`（120 秒）を追加し、超えたら `TimedOutNoForceKill`（exit 3 = 「手動で Manager を閉じてから再試行」）で降りる。**caller 自身が残っている間はこの上限は効かない**（caller は必ず終了するので待ってよい）。
 - 実装: `GetTargetProcesses` を「caller PID + 同一 install の他 Manager」の和集合に変更し、1 プロセス分の判定を `IsSameInstallManager` に抽出。ProcessName 一致 / MainModule path 一致 / 「識別できない」を「終了済み」と読まない（#440）の各規約はそのまま適用される。他 Manager 側のログは待機ログと同じ間引き（`verboseLog`）に載せてログ肥大を避ける。
 - bump 判断: bugfix のみ。**patch（v0.2.2 → v0.2.3）**。Manager v0.34.2 と同 PR。
 

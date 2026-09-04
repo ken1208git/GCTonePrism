@@ -93,6 +93,24 @@ namespace TonePrism.Updater
         internal const int UnidentifiedCapSeconds = 45;
 
         /// <summary>
+        /// (#444) **caller は終了したのに、同一 install の他の Manager が残っている**状態を待つ上限 (秒)。
+        ///
+        /// #444 で「caller だけでなく同一 install の Manager を全部待つ」ようにしたが、Manager は
+        /// 通常経路で `--wait-timeout 0` (無制限) を渡すため、**残った 2 個目が永久に閉じられないと
+        /// Updater が永久に待つ**という新しい詰み方が生まれる。しかもその 2 個目が生きている典型的な
+        /// 理由は「1 つだけ起動できます」の modal を誰も押していないことなので、放っておいても
+        /// 閉じられない可能性が高い。caller (= 更新を始めた Manager) は既に終了していて画面が無いので、
+        /// ユーザーからは「管理ソフトが消えたまま何も起きない」に見える — <see cref="UnidentifiedCapSeconds"/>
+        /// を入れたのとまったく同じ理由で、ここにも上限が要る。
+        ///
+        /// 上限に達したら `TimedOutNoForceKill` (exit 3) を返す。exit 3 の案内は
+        /// 「手動で Manager を閉じてから再試行」で、この状況にそのまま当てはまる。
+        ///
+        /// caller 自身が残っている間はこの上限は効かない (caller は必ず終了するので待ってよい)。
+        /// </summary>
+        private const int OtherManagersCapSeconds = 120;
+
+        /// <summary>
         /// Manager プロセスが全て終了するまで polling で待機する。
         /// </summary>
         /// <param name="timeoutSeconds">timeout 秒数 (0 で無制限)</param>
@@ -107,6 +125,7 @@ namespace TonePrism.Updater
             int forceKillAttempts = 0;
             int consecutiveEnumerationFailures = 0;
             var unidentifiedSince = new Stopwatch();
+            var othersOnlySince = new Stopwatch();
 
             if (callerPid > 0)
             {
@@ -175,6 +194,26 @@ namespace TonePrism.Updater
                         {
                             Logger.Info($"...待機継続中 ({sw.Elapsed.TotalSeconds:F1}s 経過、{procs.Length} 件残存)");
                         }
+                    }
+
+                    // (#444) caller は終了したのに同一 install の他の Manager が残っている状態の上限。
+                    // 通常経路は `--wait-timeout 0` (無制限) なので、下の timeout 判定では拾えない。
+                    if (!enumerationFailed && callerPid > 0 && procs.Length > 0 && !ContainsPid(procs, callerPid))
+                    {
+                        if (!othersOnlySince.IsRunning) othersOnlySince.Restart();
+                        if (othersOnlySince.Elapsed.TotalSeconds >= OtherManagersCapSeconds)
+                        {
+                            Logger.Error($"更新を始めた Manager は終了しましたが、同じ install の別の Manager が"
+                                + $" {OtherManagersCapSeconds} 秒経っても残っています。"
+                                + " 起動中のまま置換に進むとデータが不整合になるため、Manager dir には触らずに中止します"
+                                + " (「Manager は 1 つだけ起動できます」の小窓が他のウィンドウの裏に隠れていないか"
+                                + " 確認し、すべての管理ソフトを閉じてからもう一度お試しください)");
+                            return WaitResult.TimedOutNoForceKill;
+                        }
+                    }
+                    else
+                    {
+                        othersOnlySince.Reset();
                     }
 
                     // (#440) 「生きているが同一性を確認できない」状態の上限。**timeout 判定より先に見る** —
@@ -457,6 +496,17 @@ namespace TonePrism.Updater
                 return false;
             }
             return true;
+        }
+
+        /// <summary>指定 PID が配列に含まれるか。`Id` アクセス中の例外は「含まれない」に倒す。</summary>
+        private static bool ContainsPid(Process[] procs, int pid)
+        {
+            foreach (Process p in procs)
+            {
+                try { if (p.Id == pid) return true; }
+                catch (Exception) { /* 列挙中に exit 等。含まれない扱い */ }
+            }
+            return false;
         }
 
         private static void KillAll(Process[] procs)
