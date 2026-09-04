@@ -26,7 +26,7 @@ namespace TonePrism.Updater
     ///   --log-dir          (任意) ログ出力先。省略時は `<install>/logs/updater/` (manager-target の親から導出、SPEC §3.7.4 準拠)
     ///   --wait-timeout     (任意) Manager プロセス終了待ちの timeout 秒数 (default: 60、0 = 無制限待機)
     ///   --force-kill       (任意) timeout 経過後に Manager を強制 kill するか (default off)
-    ///   --caller-pid       (任意) Updater を spawn した Manager の PID。指定時は PID-only で wait/kill (同 PC の他 install Manager を巻き添えにしない)。未指定時は system-wide GetProcessesByName fallback (Codex round 2 P1 #1)
+    ///   --caller-pid       (任意) Updater を spawn した Manager の PID。指定時は caller + 同じ exe path から起動している Manager を wait/kill (#444) (同 PC の他 install Manager を巻き添えにしない)。未指定時は system-wide GetProcessesByName fallback (Codex round 2 P1 #1)
     ///
     /// 引数 parse 失敗時は ArgumentException を投げる (Program.cs 側で catch + Logger.Error + exit 2)。
     /// </summary>
@@ -40,7 +40,7 @@ namespace TonePrism.Updater
         public bool ForceKill { get; private set; }
         // -1 = 未指定 (system-wide GetProcessesByName fallback、Codex round 2 P1 #1 で acknowledged
         // した「同 PC 全 Manager 巻き添えリスク」を回避するため、Manager UI (Phase 4) は自身の
-        // PID を `--caller-pid <PID>` で渡すこと推奨。指定時は GetProcessById で PID-only wait/kill)
+        // PID を `--caller-pid <PID>` で渡すこと推奨。指定時は caller + 同一 install の Manager を wait/kill)
         public int CallerPid { get; private set; } = -1;
 
         public static CliArgs Parse(string[] args)
@@ -220,7 +220,7 @@ namespace TonePrism.Updater
                 "  --log-dir <path>          ログ出力先 (default: <install>/logs/updater/、manager-target の親から導出、SPEC §3.7.4 準拠)\n" +
                 "  --wait-timeout <seconds>  Manager プロセス終了待ちの timeout (default: 60、0 = 無制限待機)\n" +
                 "  --force-kill              timeout 経過後に Manager を強制終了する\n" +
-                "  --caller-pid <PID>        Updater を spawn した Manager の PID。指定時は PID-only で wait/kill\n" +
+                "  --caller-pid <PID>        Updater を spawn した Manager の PID。指定時は caller + 同じ exe path から起動している Manager を wait/kill (#444)\n" +
                 "                            (同 PC の他 install Manager を巻き添えにしない)。未指定時は\n" +
                 "                            system-wide GetProcessesByName fallback。\n" +
                 "\n" +

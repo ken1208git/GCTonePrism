@@ -1430,6 +1430,8 @@ SPEC §2.4 で定義される「主要 (Launcher / Manager / Monitor) を補助�
 - **`--caller-pid` 指定時も、同じ install から起動している Manager プロセスを全部待つ (#444)**。従来は caller の 1 PID だけを待機対象にしていた。これは round 2 P1 #1 で **他 install の Manager を巻き添えにしない**ために入れた設計だが、「**同一 install の別プロセスを無視してよい**」という意味ではなかった。exe path 一致で絞れば巻き添えリスクを増やさずにこの穴だけ塞げる。
 - 本番事故（2026-09-04、v0.11.1 の適用失敗）: 同 PC で 2 つ目の Manager が「1 つだけ起動できます」の modal を出したまま 2 分 42 秒生存し、caller だけを待った Updater が `Manager` → `Manager.bak` の rename でアクセス拒否になった。**同じ共有フォルダ上の Launcher / LauncherAgent / Companions/Updater / bat の置換はすべて成功しており**、権限や SMB の問題ではなく「そのフォルダだけ生きたプロセスが掴んでいた」ことが切り分けられた。
 - **同時に「永久待ち」の穴も塞いだ (#444)**。「同一 install の Manager を全部待つ」ようにすると、Manager が通常経路で渡す `--wait-timeout 0`（無制限）と組み合わさって、**残った 2 個目が永久に閉じられないと Updater が永久に待つ**という新しい詰み方が生まれる。しかも 2 個目が生きている典型的な理由は「1 つだけ起動できます」の modal を誰も押していないことなので、放っておいて閉じられる見込みが薄い。caller は既に終了していて画面が無いため、ユーザーからは「管理ソフトが消えたまま何も起きない」に見える — `UnidentifiedCapSeconds` を入れたのとまったく同じ理由なので、`OtherManagersCapSeconds`（120 秒）を追加し、超えたら `TimedOutNoForceKill`（exit 3 = 「手動で Manager を閉じてから再試行」）で降りる。**caller 自身が残っている間はこの上限は効かない**（caller は必ず終了するので待ってよい）。
+- **caller 以外は「exe path を確認できたもの」だけを対象にする (レビュー High-2)**。当初は caller と同じく「path を読めなくても待つ」(#440) にしていたが、caller 以外では risk profile が逆転する — 他 install / 他 user session の Manager は `MainModule` が access denied で読めないため、待つ側に倒すと `unidentified` が立ち、**無関係なプロセス 1 つで更新が exit 9 で中止される**。「path 一致で絞るので巻き添えリスクは増えない」という当初の主張も、読めない経路では成立していなかった。caller の「識別できないなら待つ」は *自分の* Manager だから正しい、という非対称を明示的に引数 (`treatUnreadablePathAsMatch`) にした。
+- **他 Manager の列挙失敗を握り潰さない (レビュー Medium-1)**。当初は `catch` して「他 Manager なし」に縮退させていたが、通常経路では caller は既に終了していて caller 側の結果は空なので、**縮退すると「Manager は既に終了済み」→ 成功扱いになり、#444 で塞いだ穴が列挙失敗時にそのまま復活**していた。例外は呼び出し元へ抜けて既存の連続失敗カウント (5 回で exit 8) に載せる。
 - 実装: `GetTargetProcesses` を「caller PID + 同一 install の他 Manager」の和集合に変更し、1 プロセス分の判定を `IsSameInstallManager` に抽出。ProcessName 一致 / MainModule path 一致 / 「識別できない」を「終了済み」と読まない（#440）の各規約はそのまま適用される。他 Manager 側のログは待機ログと同じ間引き（`verboseLog`）に載せてログ肥大を避ける。
 - bump 判断: bugfix のみ。**patch（v0.2.2 → v0.2.3）**。Manager v0.34.2 と同 PR。
 
@@ -2548,6 +2550,8 @@ PR #150 で dir rename (`GCTonePrism_Launcher/` → `Launcher/`) に連動して
 
 - **更新前の起動中プロセスチェックに「自分以外の Manager」を追加 (#444)**。従来は Launcher と Companions しか見ておらず（`ProcessTerminator.EnumerateRunning`）、**同じ PC で 2 つ目の Manager が開いていても素通り**していた。2 つ目は単一起動チェックで modal を出すが、**その modal は OK を押すまで閉じず、その間 `Manager/` 配下の exe / dll を掴み続ける**。本番ではこれが 2 分 42 秒生き残り、Updater の `Manager` → `Manager.bak` rename がアクセス拒否になった（2026-09-04、v0.11.1 の適用失敗）。
 - 別 install の Manager は対象外（置換されるのは自分の install の dir だけ）。ただし **path を読めなかった場合は「同じ install かもしれない」側に倒して数える** — 見逃すと上記の事故に直結するので、余分に警告する方が安全側。
+- **path を確認できたプロセスだけを数える (レビュー Medium-2)**。当初は「読めなければ同じ install かもしれない側に倒す」としていたが、呼び出し側は**リストが空になるまで Retry/Cancel を回すループで「無視して続行」の出口が無い**ため、false positive は「更新が二度と始められない」に直結する。他 user session の Manager は `MainModule` が読めないので、読めないものまで数えると**見えないウィンドウを閉じろと言われて詰む**。実際に塞ぎたいケース (同一ユーザー・同一 install の 2 個目) では path は問題なく読めるし、読めなかった場合も Updater 側が待機と 120 秒上限で拾う。
+- 自分の exe path は `MainModule` ではなく `AppContext.BaseDirectory` から組み立てる。`MainModule` 経由だと**自分自身の読み取りに失敗したときに全 Manager を数えて**しまい、上記の詰みを招く経路が残っていた。
 - bump 判断: bugfix のみ。**patch（v0.34.1 → v0.34.2）**。Updater v0.2.3 と同 PR。
 
 ### [Manager v0.34.1] - 2026-09-04
