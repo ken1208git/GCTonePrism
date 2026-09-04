@@ -241,6 +241,38 @@ namespace TonePrism.Manager.Services
         }
 
         /// <summary>
+        /// (#440) Updater が結果を残さずに終わった場合に、**Manager 側から失敗を記録する**。
+        ///
+        /// 申し送り (`.update_completed`) は読んだ時点で必ず消える一度きりの通知なので、これを書かないと
+        /// 次回起動で判断材料が全部無くなり、「最新版を実行中」+ ボタン無効の袋小路に戻る
+        /// (= #440 と同じ行き止まり)。申し送りを残す案は採らない — 手動で `Install.bat` から復旧しても
+        /// 結果ファイルは生まれないため、直したのに永久に警告が出続けることになる。
+        ///
+        /// 状態の置き場所を `.update_result` 1 つに保てば、`targetManagerVersion` に版数が追いついた
+        /// 時点で自動失効するので、手動復旧でも勝手に解消する。
+        ///
+        /// 終了コードは 1 (汎用エラー = 「内部エラー、ログを確認」) として記録する。Updater が実際の
+        /// コードを残せなかった以上、原因は本当に分からない。
+        /// </summary>
+        public static void RecordFailureWithoutUpdaterResult(string targetManagerVersion)
+        {
+            try
+            {
+                string json = "{"
+                    + "\"finishedAt\":\"" + DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture) + "\","
+                    + "\"exitCode\":1,"
+                    + "\"targetManagerVersion\":" + (string.IsNullOrEmpty(targetManagerVersion) ? "null" : "\"" + targetManagerVersion + "\"")
+                    + "}";
+                File.WriteAllText(UpdateResultPath, json, new System.Text.UTF8Encoding(false));
+                Logger.Info("[UpdaterClient] Updater が結果を残さなかったため、Manager 側で未完了を記録しました");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[UpdaterClient] 未完了の記録に失敗 (継続): " + ex.Message);
+            }
+        }
+
+        /// <summary>
         /// (#440) 実行結果を消す。**成功を確認した時点で呼ぶ** — 成功はもう覚えておく必要が無い。
         /// 失敗は残す (アップデートタブが再試行ボタンを有効に戻すために後で参照するため)。
         /// </summary>

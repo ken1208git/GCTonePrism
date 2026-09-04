@@ -1344,6 +1344,18 @@ namespace TonePrism.Manager
                     + (running != null ? running.ToString() : "(不明)")
                     + " / Updater 終了コード=" + (exitCode.HasValue ? exitCode.Value.ToString() : "(記録なし)"));
 
+                // (#440) Updater が結果を残していない場合は **ここで書く**。申し送りは読んだ時点で
+                // 必ず消える一度きりの通知なので、書かないと次回起動で判断材料が全部無くなり
+                // 「最新版を実行中」+ ボタン無効の袋小路に戻る (= #440 と同じ行き止まり)。
+                //
+                // 申し送りの方を残す案は採らない — 手動で Install.bat から復旧しても結果ファイルは
+                // 生まれないため、直したのに永久に警告が出続けることになる。状態の置き場所を
+                // .update_result 1 つに保てば、版数が追いついた時点で自動失効するので手動復旧でも解消する。
+                if (runResult == null)
+                {
+                    Services.UpdaterClient.RecordFailureWithoutUpdaterResult(expectedManagerVersion);
+                }
+
                 // 版数の行は **不一致のときだけ** 出す。判定は「版数の不一致 OR 終了コードの失敗」なので、
                 // 終了コードだけで失敗した経路では両者が同値になり「v0.34.1.0 / 本来は v0.34.1.0」という
                 // 不可解な表示になる (期待版数が読めなければ「本来は v不明」)。
