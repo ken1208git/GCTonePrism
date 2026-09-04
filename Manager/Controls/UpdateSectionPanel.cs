@@ -495,12 +495,17 @@ namespace TonePrism.Manager.Controls
                     // 旧実装は ProcessingDialog 閉じてから即 Application.Exit で Manager が silent に
                     // 消える挙動 (= user 視点で「あれ?何が起きた?」になりやすい)。本 dialog で
                     // 「これから Manager を一旦終了 → 新版で自動起動」を明示してから user の OK で
-                    // 確定終了。新 Manager 起動時には sentinel 経由で「✓ アップデート完了」 dialog が出る。
+                    // 確定終了。新 Manager 起動時には sentinel 経由で結果 dialog が出る。
+                    //
+                    // (#440) **「完了のお知らせが出ます」と約束しない。** ここで完了しているのは
+                    // ダウンロードと展開までで、Manager dir の置換はこの後 Updater がやる。約束すると
+                    // 「引き渡した時点を完了と呼ぶ」同じ間違いをもう一度することになる (実際、置換に
+                    // 失敗しても完了 dialog が出ていた)。結果は新 Manager が検証してから出す。
                     MessageBox.Show(this,
                         "ダウンロードと展開が完了しました。\n\n" +
                         "OK を押すと Manager を一旦終了して、新しいバージョンで自動的に再起動します。\n" +
                         "再起動には数秒〜数十秒かかる場合があります。\n\n" +
-                        "新しい Manager が起動したら、「✓ アップデート完了」のお知らせが表示されます。",
+                        "新しい Manager が起動したら、アップデートの結果をお知らせします。",
                         "Manager を再起動します",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
