@@ -1623,6 +1623,12 @@ function Assert-UpdaterBitness {
     #  (2) 読み込んだ assembly は**プロセスが終わるまでファイルを掴む**。以降この exe を
     #      削除・上書きする step があると失敗する。現状 Build-Updater は先頭で bin/Release を消してから
     #      build するので、1 プロセス 1 回の実行では衝突しない (staging へのコピーは読み取りのみ)。
+    #  (3) **assembly identity でキャッシュされる。** 同一 PowerShell プロセス内で 2 回目に呼ぶと
+    #      1 回目にロードした古い assembly が返り得るため、間で再ビルドしても古い判定のまま
+    #      「OK」と言う silent pass になる。(1)(2) は Fail に落ちるが、これだけは黙って通る種類。
+    #      出荷経路 (Release.bat が毎回新しい powershell.exe を起動) では 1 プロセス 1 回なので
+    #      実害は無いが、この関数を同一セッションで再利用する形に変えるなら
+    #      System.Reflection.Metadata の PEReader で CorFlags を直読みしてキャッシュ依存を消すこと。
     if (-not (Test-Path $ExePath)) {
         Fail "Updater の bitness を検証できません (exe が見つかりません): $ExePath"
     }

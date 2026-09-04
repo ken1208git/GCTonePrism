@@ -384,6 +384,22 @@ namespace TonePrism.Updater
                         return new Process[0];
                     }
 
+                    if (actualPath == null)
+                    {
+                        // (レビュー Medium-2) `MainModule` は例外を投げずに **null を返すこともある**。
+                        // これを下の path 比較に流すと「別 path 'null'」= 別 install と判定され、
+                        // **#440 と同じ「識別できない」を「終了済み」と読む挙動が残る**。
+                        // 例外経路と同じく「同名プロセスが生きている以上は待つ」に倒す。
+                        unidentified = true;
+                        if (verboseLog)
+                        {
+                            Logger.Warn($"PID={callerPid} の MainModule が null でした。"
+                                + " プロセス名は一致しているため Manager が起動中とみなして待機します"
+                                + " (同一性を確認できていないので kill 対象にはしません)");
+                        }
+                        return new[] { p };
+                    }
+
                     if (!string.Equals(actualPath, expectedExePath, StringComparison.OrdinalIgnoreCase))
                     {
                         Logger.Info($"PID={callerPid} は同名 exe だが別 path '{actualPath}' (期待: '{expectedExePath}')、別 install / session と判定、Manager 既終了扱い");

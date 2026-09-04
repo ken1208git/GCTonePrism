@@ -86,7 +86,7 @@ namespace TonePrism.Updater
                 // `SecurityException` / `UnauthorizedAccessException` / `IOException` 等の権限・環境
                 // 問題、または .NET runtime 内部の予期しない例外) を明示的に exit 1 (documented
                 // exit codes) に倒す。旧実装は本 catch が無く CLR 既定の uncaught exception で
-                // 異常終了 → Manager UI Phase 4 の retry/diagnostic 分岐が documented 0-8 と乖離した
+                // 異常終了 → Manager UI Phase 4 の retry/diagnostic 分岐が documented 0-9 と乖離した
                 // 予期しない exit code を受ける silent danger があった。Logger 未初期化なので stack
                 // trace はログファイルに残らず stderr のみ (SPEC §3.7.4 「exit 2 / 1 (parse 段階)
                 // はログファイル不在」規約、round 6 Medium-4)。

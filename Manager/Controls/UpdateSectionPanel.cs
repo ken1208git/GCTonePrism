@@ -157,10 +157,18 @@ namespace TonePrism.Manager.Controls
                     //
                     // Updater の終了コードは失敗を正しく記録しているので、それを見て判定を覆す。
                     // ここで再試行を許すのは安全側 — 既に最新なら適用しても同じ内容が入るだけ。
-                    if (IsPreviousUpdateFailed())
+                    PreviousUpdateVerdict verdict = GetPreviousUpdateVerdict();
+                    if (verdict != PreviousUpdateVerdict.Clean)
                     {
-                        lblStatusMessage.Text = "前回のアップデートが完了していません。もう一度お試しください。";
-                        lblStatusMessage.ForeColor = System.Drawing.Color.DarkRed;
+                        // (レビュー High-1) 「失敗」と「確認できなかった」で文言と色は変えるが、
+                        // **ボタンはどちらも有効にする**。断定できないことと、導線を閉じてよいことは別。
+                        bool prevFailed = (verdict == PreviousUpdateVerdict.Failed);
+                        lblStatusMessage.Text = prevFailed
+                            ? "前回のアップデートが完了していません。もう一度お試しください。"
+                            : "前回のアップデートの結果を確認できませんでした。必要ならもう一度お試しください。";
+                        lblStatusMessage.ForeColor = prevFailed
+                            ? System.Drawing.Color.DarkRed
+                            : System.Drawing.Color.DimGray;
                         btnUpdateNow.Enabled = true;
                         btnSkip.Enabled = false;
                         break;
@@ -336,23 +344,45 @@ namespace TonePrism.Manager.Controls
         /// 値は 1 度読んだらキャッシュする (ApplyResult は cache hydrate / background check 完了 /
         /// 手動再確認のたびに走り、そのつど UI スレッドでディレクトリ列挙する必要は無い)。
         /// </summary>
-        private bool IsPreviousUpdateFailed()
+        /// <summary>前回の更新について、このタブが取るべき態度。</summary>
+        private enum PreviousUpdateVerdict
         {
-            // 判定は UpdaterClient の 3 値 (無い / 読めない / 成功 / 失敗) に一本化する。
+            /// <summary>問題なし。通常の「最新版を実行中です」を出してよい。</summary>
+            Clean,
+            /// <summary>失敗が記録されている。赤字 + 再試行を促す。</summary>
+            Failed,
+            /// <summary>成否を確認できなかった。断定はしないが**再試行の導線は開けておく**。</summary>
+            Unverifiable,
+        }
+
+        /// <summary>
+        /// (レビュー High-1) **「判定材料から外す」と「導線を閉じる」を分離する。**
+        ///
+        /// 記録が壊れている (`Unreadable`) とき、それを「失敗ではない」と読んでボタンまで無効にすると
+        /// 詰む — 壊れた記録は意図的に削除しないので**毎回の起動で再現し、自然解消しない**。
+        /// 記録が消える 3 経路のうち「次の試行が上書き」はボタンが無効なら到達できず、残るのは
+        /// `Install.bat` だけ。起動時ダイアログが「もう一度お試しください」と案内した先が行き止まりになり、
+        /// **本 PR が立てた「失敗の記録が残っている限り再試行できる」という不変条件を破る。**
+        /// 断定はしない (赤字にも「失敗」とも言わない) が、押せる状態にはしておく。
+        /// </summary>
+        private PreviousUpdateVerdict GetPreviousUpdateVerdict()
+        {
             // 「無い」と「読めない」は意味が正反対 — 前者は旧 Updater / 未更新で失敗の証拠ではなく、
             // 後者は判定不能。混ぜると、成功した更新で記録が壊れていただけで偽の「未完了」を出す。
             switch (UpdaterClient.ConsumePreviousRunState())
             {
                 case UpdaterClient.PreviousRunState.Failed:
-                    return true;
-                case UpdaterClient.PreviousRunState.Succeeded:
+                    return PreviousUpdateVerdict.Failed;
                 case UpdaterClient.PreviousRunState.Unreadable:
-                    return false;
+                    return PreviousUpdateVerdict.Unverifiable;
+                case UpdaterClient.PreviousRunState.Succeeded:
+                    return PreviousUpdateVerdict.Clean;
                 default:
                     // 記録が無い = 旧 Updater。従来のログ推測にフォールバックする。
                     int? exitCode = UpdaterClient.TryLoadLastExitCode();
-                    return exitCode.HasValue
+                    bool failed = exitCode.HasValue
                         && UpdaterClient.DispatchExitCode(exitCode.Value).Severity != ExitSeverity.Success;
+                    return failed ? PreviousUpdateVerdict.Failed : PreviousUpdateVerdict.Clean;
             }
         }
 

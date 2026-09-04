@@ -1247,6 +1247,18 @@ namespace TonePrism.Manager
         /// </summary>
         private void TryShowUpdateCompletedDialog()
         {
+            // (レビュー C-1) **起動時の consume はここで行う。** アップデートタブの Initialize は
+            // ContinueLoadAfterSessionCheck の中にあり、DB 初期化拒否や同時起動 Cancel では到達しない。
+            // そこに置くと成功記録が消えずに残り、残った exit 0 が後続の失敗を隠す
+            // (resultFileMissing が false になり updaterLeftNoTrace が発火しない)。
+            // 本メソッドは MainForm_Load 冒頭で、それらの early-return より先に走る。
+            //
+            // (レビュー Low-3) **consume は sentinel の有無より前**に置く。sentinel の書き込みは
+            // Logger.Warn で握り潰される (書けなくても installation 自体は完成しているため) ので、
+            // 「更新は成功したが sentinel が無い」起動が実在する。そこで consume を skip すると
+            // 成功記録が残り、C-1 で塞いだ「残った exit 0 が後続の失敗を隠す」経路が細く復活する。
+            var prevState = Services.UpdaterClient.ConsumePreviousRunState();
+
             string sentinelPath = System.IO.Path.Combine(PathManager.BaseDirectory, ".update_completed");
             if (!System.IO.File.Exists(sentinelPath)) return;
 
@@ -1301,13 +1313,6 @@ namespace TonePrism.Manager
             // (Release.ps1 の Assert-PublishedManagerVersion) が一致を強制しているのも 3-part までで、
             // revision だけ drift しても公開は通る。4-part で比べると、その場合に全ユーザーが
             // 偽の「✗ アップデート未完了」を食らう。ゲートと同じ粒度にしておく。
-            // (レビュー C-1) **起動時の consume はここで行う。** アップデートタブの Initialize は
-            // ContinueLoadAfterSessionCheck の中にあり、DB 初期化拒否や同時起動 Cancel では到達しない。
-            // そこに置くと成功記録が消えずに残り、残った exit 0 が後続の失敗を隠す
-            // (resultFileMissing が false になり updaterLeftNoTrace が発火しない)。
-            // 本メソッドは MainForm_Load 冒頭で、どちらの early-return よりも先に走る。
-            var prevState = Services.UpdaterClient.ConsumePreviousRunState();
-
             // (レビュー C-2) `Version.TryParse` は 2 パート ("1.0") でも成功するが、`ToString(3)` は
             // 要素数を超える fieldCount で ArgumentException を投げる。expectedManagerVersion は
             // staging exe の VERSIONINFO 由来の**任意文字列**なので 2 パート値がありうる。
@@ -1335,9 +1340,17 @@ namespace TonePrism.Manager
             // というヒューリスティックで、文言依存で壊れるうえ失敗の翌朝には読めない。
             int? exitCode = Services.UpdaterClient.PreviousRunExitCode
                 ?? Services.UpdaterClient.TryLoadLastExitCode();
-            string detail = exitCode.HasValue
-                ? Services.UpdaterClient.DispatchExitCode(exitCode.Value).Title
-                : "原因不明";
+            // (レビュー Medium-1) **成功コードを「原因」として出さない。** 版数不一致だけで失敗と
+            // 判定した経路では exitCode が 0 のことがあり、そのまま埋めると
+            // 「アップデートに失敗しました … 原因: アップデート完了」という自己矛盾した文面になる。
+            string detail = "原因不明";
+            if (exitCode.HasValue)
+            {
+                Services.ExitCodeDispatch d = Services.UpdaterClient.DispatchExitCode(exitCode.Value);
+                detail = (d.Severity == Services.ExitSeverity.Success)
+                    ? "更新プログラムは成功と報告しましたが、置換が反映されていません"
+                    : d.Title;
+            }
             bool exitFailed = (prevState == Services.UpdaterClient.PreviousRunState.Failed)
                 || (prevState != Services.UpdaterClient.PreviousRunState.Succeeded
                     && exitCode.HasValue
@@ -1403,8 +1416,15 @@ namespace TonePrism.Manager
                 //
                 // **期待版数が無いときは記録しない。** その場合の失敗判定はログ推測 (末尾 20 行の
                 // [ERROR]) 由来で当てにならず、当てにならない根拠で貼りつく状態を作るべきではない。
-                // 記録が既にあるなら上書きしない。無いときだけ Manager 側で残す。
-                if (resultFileMissing && !string.IsNullOrEmpty(expectedManagerVersion))
+                //
+                // (レビュー High-2) 条件は「記録が無い」ではなく「**失敗と判定したのに、失敗を示す
+                // 記録が残っていない**」。旧条件だと、版数照合だけで失敗を検出した (= Updater が
+                // exit 0 を書いたのに実際には置換が効いていない。Updater 側の版数検証は片方でも
+                // 版数を読めなければ警告に留めて続行するので実在する) ケースで証拠が一切残らず、
+                // しかも成功記録は consume 済みで消えている。次回起動では sentinel も記録も無く、
+                // CHANGELOG は新版数なので「最新版を実行中」+ ボタン無効 = #440 の症状に戻る。
+                if (prevState != Services.UpdaterClient.PreviousRunState.Failed
+                    && !string.IsNullOrEmpty(expectedManagerVersion))
                 {
                     Services.UpdaterClient.RecordFailureWithoutUpdaterResult(expectedManagerVersion);
                 }
