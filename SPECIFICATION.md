@@ -1388,7 +1388,7 @@ Release.ps1 と一致 (caller CI は `%ERRORLEVEL%` で 4 通り区別):
 
 Manager の MainForm は WPF シェル移行 (#245) 後、ctor で `Opacity = 0` にされ、`ShowShellAsMain` で `Hide()` される裏方窓になった。**危険はプロセス全期間に及ぶ**（起動中は「まだ表示されていない」、起動後は「Hide 済み」）。
 
-> **未決着 (#449)**: 「`ShowShellAsMain` の `Hide()` が `MainForm_Load` の境界を越えて維持されるか」は結論が出ていない。レビュー側は複製アプリ 6 構成（.NET FW 4.8 / net10、`Opacity` 有無、WPF 込みの構造複製）すべてで**post-Load に再表示される**（`Visible=True` / `IsWindowVisible=True`）と実測し、こちら側の計測（PowerShell ハーネス）は逆の結果だった。複製では決着しないため、`ShowShellAsMain` に診断ログを仕込んで**実機で確定させる**。ログの `LoadReturned=` が `False` の行は**判定に使わないこと** — `BeginInvoke` は `MainForm_Load` から戻る前でも、ネストしたメッセージポンプ（cache が温いときの通知 MessageBox 等）があれば dispatch される。その時点では `SetVisibleCore` が再開しておらず `ShowWindow` も呼ばれていないため、Hide の挙動と無関係に `False/False` が出る（実装側で再ポストして回避済み）。再表示されるなら MainForm はタスクバーに残るので、上記「起動後は Hide 済み」と、それを根拠にした深刻度の説明を訂正すること。
+> **未決着 (#449)**: 「`ShowShellAsMain` の `Hide()` が `MainForm_Load` の境界を越えて維持されるか」は結論が出ていない。レビュー側は複製アプリ 6 構成（.NET FW 4.8 / net10、`Opacity` 有無、WPF 込みの構造複製）すべてで**post-Load に再表示される**（`Visible=True` / `IsWindowVisible=True`）と実測し、こちら側の計測（PowerShell ハーネス）は逆の結果だった。複製では決着しないため、`ShowShellAsMain` に診断ログを仕込んで**実機で確定させる**（判定は `OnShown` の発火有無。**確定後に診断を削除するところまでが #458**）。ログの `LoadReturned=` が `False` の行は**判定に使わないこと** — `BeginInvoke` は `MainForm_Load` から戻る前でも、ネストしたメッセージポンプ（cache が温いときの通知 MessageBox 等）があれば dispatch される。その時点では `SetVisibleCore` が再開しておらず `ShowWindow` も呼ばれていないため、Hide の挙動と無関係に `False/False` が出る（実装側で再ポストして回避済み）。再表示されるなら MainForm はタスクバーに残るので、上記「起動後は Hide 済み」と、それを根拠にした深刻度の説明を訂正すること。
 >
 > なお**どちらに転んでも本規約と実装は成立する** — 上記の条件 2 (`Opacity > 0`) により、透明のまま再表示されていても MainForm は owner に選ばれない。
 
