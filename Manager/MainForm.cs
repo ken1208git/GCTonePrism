@@ -1320,7 +1320,24 @@ namespace TonePrism.Manager
                 : (exitCode.HasValue
                     && Services.UpdaterClient.DispatchExitCode(exitCode.Value).Severity != Services.ExitSeverity.Success);
 
-            if (versionMismatch || exitFailed)
+            // (#440) **結果ファイルが「無い」ことも失敗の証拠になりうる。**
+            //
+            // ただし「無い」には (a) 一度も更新していない (b) 旧 Updater が動いた (c) Updater が
+            // finally に到達せず死んだ、が混ざっているので、無条件に失敗扱いすると通常起動のたびに
+            // 偽の警告が出る。切り分けるのは **申し送りに版数が入っているか**:
+            // `newManagerVersion` を書くのは #440 以降の Manager だけで、その世代なら Updater も
+            // 必ず結果を残す (書けない 3 経路は Manager dir に触れないので版数比較が拾う)。
+            // つまり「版数入りの申し送りがあるのに結果が無い」= Updater が痕跡を残さず終わった、と
+            // 特定できる。ここを見逃すと #440 と同じ「壊れているのに ✓ と言う」に戻る。
+            //
+            // v0.11.0 → v0.11.1 の 1 回だけは旧 Manager が申し送りを書く (版数なし) ため発火しない。
+            bool updaterLeftNoTrace = !string.IsNullOrEmpty(expectedManagerVersion) && runResult == null;
+            if (updaterLeftNoTrace)
+            {
+                detail = "更新プログラムが結果を残さずに終了しました";
+            }
+
+            if (versionMismatch || exitFailed || updaterLeftNoTrace)
             {
                 Services.Logger.Error("[MainForm] (#440) アップデートが完了していません: 期待 Manager v"
                     + (expectedManagerVersion ?? "(不明)") + " / 実際に起動しているのは v"
