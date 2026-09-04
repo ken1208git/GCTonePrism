@@ -113,7 +113,8 @@ namespace TonePrism.Updater
             }
             Logger.Initialize(logDir);
 
-            int exitCode;
+            // finally で結果を書き出すため初期値が要る (Run が例外で抜けた場合も 1 = 汎用エラーとして残る)。
+            int exitCode = 1;
             try
             {
                 exitCode = Run(parsed);
@@ -125,6 +126,10 @@ namespace TonePrism.Updater
             }
             finally
             {
+                // (#440) 終了コードを消えない場所に残す。Manager は Updater の終了を待てない
+                // (待つと dir を置換できない) ため、これが無いとログ解析で推測するしかなくなる。
+                // Logger.Shutdown より前に呼ぶ (書き出し結果自体もログに残したいため)。
+                UpdateResult.Write(parsed.ManagerTargetDir, parsed.StagingDir, exitCode);
                 Logger.Shutdown();
             }
             return exitCode;

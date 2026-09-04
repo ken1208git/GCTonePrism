@@ -70,6 +70,33 @@ namespace TonePrism.Manager.Tests
         }
 
         [Fact]
+        public void Sentinel_ExplicitNullNewManagerVersion_RoundTripsAsNull()
+        {
+            // writer が実際に取り得る 3 つ目の形: staging exe を読めず expectedManagerVersion が null の
+            // まま匿名型に入り、wire に "newManagerVersion": null が出るケース (フィールド欠落とは別)。
+            // ここが null で返らないと、起動時の完了検証が誤って走って偽の「✗ 未完了」を出しかねない。
+            string json = JsonCompat.Serialize(new { completedAt = "T", newVersion = "0.11.1", newManagerVersion = (string)null });
+            var back = JsonCompat.Deserialize<CamelWireDto>(json);
+            Assert.NotNull(back);
+            Assert.Equal("0.11.1", back.NewVersion);
+            Assert.Null(back.NewManagerVersion);
+        }
+
+        [Fact]
+        public void UpdateRunResult_WireContract_RoundTrips()
+        {
+            // (#440) Updater が書き `<install>/.update_result` に残す実行結果。Manager 側の成否判定は
+            // 全面的にこの wire contract に乗っている。マッピングが壊れると null / 既定値になり、
+            // 判定が黙って旧ログ推測にフォールバックする = silent な劣化になるので固定する。
+            string json = JsonCompat.Serialize(new { finishedAt = "T", exitCode = 4, success = false, targetManagerVersion = "0.34.1.0" });
+            var dto = JsonCompat.Deserialize<TonePrism.Manager.Services.UpdaterClient.UpdateRunResult>(json);
+            Assert.NotNull(dto);
+            Assert.Equal(4, dto.ExitCode);
+            Assert.False(dto.Success);
+            Assert.Equal("0.34.1.0", dto.TargetManagerVersion);
+        }
+
+        [Fact]
         public void DeserializeToObjectTree_Object_ReturnsStringObjectDict_WithJavaScriptSerializerTypes()
         {
             // 旧 DeserializeObject の型再現: object → Dictionary<string,object>、値は string/bool/long/double/null。

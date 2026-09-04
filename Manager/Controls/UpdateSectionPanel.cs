@@ -322,15 +322,11 @@ namespace TonePrism.Manager.Controls
         }
 
         /// <summary>
-        /// (#440) 前回の Updater 実行が失敗していたか。sentinel の終了コードから判定する。
-        /// 記録が無い (= 一度もアップデートしていない / 読めない) 場合は false (= 失敗扱いしない)。
-        /// </summary>
-        /// <summary>
         /// (#440) 前回のアップデートが未完了で終わったか。
         ///
-        /// **永続マーカーを先に見る。** exit code のログは直近 2 分しか遡らないため、失敗の翌朝に
-        /// 起動したケースでは読めず、CHANGELOG 由来の版数で「最新版を実行中」= ボタン無効に戻る。
-        /// マーカーは `MainForm` が起動時の検証で書き、完了を確認できた時点で消す。
+        /// **Updater が書き残した実行結果を見る。** exit code のログ推測は直近 2 分しか遡らないため、
+        /// 失敗の翌朝に起動したケースでは読めず、CHANGELOG 由来の版数で「最新版を実行中」= ボタン無効に
+        /// 戻ってしまう (= #440 と同じ行き止まり)。結果ファイルは時間に依存しない。
         ///
         /// 値は 1 度読んだらキャッシュする (ApplyResult は cache hydrate / background check 完了 /
         /// 手動再確認のたびに走り、そのつど UI スレッドでディレクトリ列挙する必要は無い)。
@@ -338,9 +334,12 @@ namespace TonePrism.Manager.Controls
         private bool IsPreviousUpdateFailed()
         {
             if (_previousUpdateFailed.HasValue) return _previousUpdateFailed.Value;
-            bool failed = UpdaterClient.HasUpdateFailedMark();
-            if (!failed)
+            // 一次情報は Updater が書き残した実行結果。実行中の Manager が目標版数に達していれば
+            // その失敗は解消済みなので、HasUnresolvedFailure が記録ごと失効させる。
+            bool failed = UpdaterClient.HasUnresolvedFailure();
+            if (!failed && UpdaterClient.TryLoadUpdateResult() == null)
             {
+                // 結果ファイルが無い = 旧 Updater。従来のログ推測にフォールバックする。
                 int? exitCode = UpdaterClient.TryLoadLastExitCode();
                 failed = exitCode.HasValue
                     && UpdaterClient.DispatchExitCode(exitCode.Value).Severity != ExitSeverity.Success;

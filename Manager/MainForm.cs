@@ -1296,45 +1296,61 @@ namespace TonePrism.Manager
             // 「一致しなければ失敗」は正しいが、その逆 (一致すれば成功) は成り立たない。
             Version running = Services.VersionInventory.ReadManagerVersion();
             Version expectedVer;
+            // **比較は 3-part に揃える。** running は AssemblyVersion、expected は apphost の
+            // FileVersion (= AssemblyFileVersion 由来) で **SoT が違う**。リリースゲート
+            // (Release.ps1 の Assert-PublishedManagerVersion) が一致を強制しているのも 3-part までで、
+            // revision だけ drift しても公開は通る。4-part で比べると、その場合に全ユーザーが
+            // 偽の「✗ アップデート未完了」を食らう。ゲートと同じ粒度にしておく。
             bool versionMismatch = !string.IsNullOrEmpty(expectedManagerVersion)
                 && running != null
                 && Version.TryParse(expectedManagerVersion, out expectedVer)
-                && running != expectedVer;
-            int? exitCode = Services.UpdaterClient.TryLoadLastExitCode();
+                && running.ToString(3) != expectedVer.ToString(3);
+            // (#440) 一次情報は Updater が書き残した実行結果。無い場合 (旧 Updater) だけ、従来の
+            // ログ推測にフォールバックする。ログ推測は「末尾 20 行に [ERROR] があれば失敗」+「直近 2 分」
+            // というヒューリスティックで、致命的でない Error 行で誤判定するうえ失敗の翌朝には読めない。
+            var runResult = Services.UpdaterClient.TryLoadUpdateResult();
+            int? exitCode = runResult != null
+                ? (int?)runResult.ExitCode
+                : Services.UpdaterClient.TryLoadLastExitCode();
             string detail = exitCode.HasValue
                 ? Services.UpdaterClient.DispatchExitCode(exitCode.Value).Title
                 : "原因不明";
-            bool exitFailed = exitCode.HasValue
-                && Services.UpdaterClient.DispatchExitCode(exitCode.Value).Severity != Services.ExitSeverity.Success;
+            bool exitFailed = runResult != null
+                ? !runResult.Success
+                : (exitCode.HasValue
+                    && Services.UpdaterClient.DispatchExitCode(exitCode.Value).Severity != Services.ExitSeverity.Success);
 
             if (versionMismatch || exitFailed)
             {
+                Services.Logger.Error("[MainForm] (#440) アップデートが完了していません: 期待 Manager v"
+                    + (expectedManagerVersion ?? "(不明)") + " / 実際に起動しているのは v"
+                    + (running != null ? running.ToString() : "(不明)")
+                    + " / Updater 終了コード=" + (exitCode.HasValue ? exitCode.Value.ToString() : "(記録なし)"));
+
+                // 版数の行は **不一致のときだけ** 出す。判定は「版数の不一致 OR 終了コードの失敗」なので、
+                // 終了コードだけで失敗した経路では両者が同値になり「v0.34.1.0 / 本来は v0.34.1.0」という
+                // 不可解な表示になる (期待版数が読めなければ「本来は v不明」)。
+                string failBody = "アップデートに失敗しました。\n\n";
+                if (versionMismatch)
                 {
-                    Services.Logger.Error("[MainForm] (#440) アップデートが完了していません: 期待 Manager v"
-                        + (expectedManagerVersion ?? "(不明)") + " / 実際に起動しているのは v"
-                        + (running != null ? running.ToString() : "(不明)")
-                        + " / Updater 終了コード=" + (exitCode.HasValue ? exitCode.Value.ToString() : "(記録なし)"));
-                    // **失敗の事実を永続化する。** これが無いと TryLoadLastExitCode の 2 分窓を過ぎた
-                    // 再起動 (翌朝など) で失敗が見えなくなり、CHANGELOG 由来の版数で「最新版を実行中」に
-                    // 戻って「今すぐアップデート」も無効になる = #440 と同じ行き止まりへ逆戻りする。
-                    Services.UpdaterClient.MarkUpdateFailed();
-                    MessageBox.Show(
-                        "アップデートに失敗しました。\n\n" +
-                        "  管理ソフトが古いままです（v" + (running != null ? running.ToString() : "不明") + " / 本来は v" + (expectedManagerVersion ?? "不明") + "）\n" +
-                        "  原因: " + detail + "\n\n" +
-                        "ゲームのデータは失われていません。そのままお使いいただけます。\n\n" +
-                        "「アップデート」タブからもう一度お試しください。\n" +
-                        "それでも失敗する場合は、logs フォルダの中の記録ファイルを\n" +
-                        "そえて、開発者に連絡してください。",
-                        "✗ アップデート未完了",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Warning);
-                    return;
+                    failBody += "  管理ソフトが古いままです（v" + running + " / 本来は v" + expectedManagerVersion + "）\n";
                 }
+                failBody += "  原因: " + detail + "\n\n"
+                    + "ゲームのデータは失われていません。そのままお使いいただけます。\n\n"
+                    + "「アップデート」タブからもう一度お試しください。\n"
+                    + "それでも失敗する場合は、logs フォルダの中の記録ファイルを\n"
+                    + "そえて、開発者に連絡してください。";
+                MessageBox.Show(
+                    failBody,
+                    "✗ アップデート未完了",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
             }
-            // 検証を通った = 置換は完了している。前回失敗のマーカーが残っていれば消す
-            // (残すと次回以降ずっと「前回のアップデートが完了していません」になる)。
-            Services.UpdaterClient.ClearUpdateFailedMark();
+            // 検証を通った = 置換は完了している。**成功はもう覚えておく必要が無い**ので実行結果を消す。
+            // (失敗のときだけ残し、アップデートタブが再試行ボタンを有効に戻すのに使う。
+            //  平常時は .update_result が存在しない状態になる。)
+            Services.UpdaterClient.ClearUpdateResult();
 
             // CompletedAt は writer が ISO 8601 UTC で書き出した値 ("yyyy-MM-ddTHH:mm:ssZ")。dialog では
             // user-friendly な local time format に変換 ("yyyy-MM-dd HH:mm")。parse 失敗時は空文字で fallback、

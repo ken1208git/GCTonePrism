@@ -186,39 +186,96 @@ namespace TonePrism.Manager.Services
         /// round 1 H3 fix で書き直した際の追従漏れ。docstring を実装に揃えて訂正。
         /// </summary>
         /// <summary>
-        /// (#440) 「前回のアップデートが未完了で終わった」ことを install dir に残す。
+        /// (#440) Updater が書き残した実行結果 (`&lt;install&gt;/.update_result`)。
         ///
-        /// <see cref="TryLoadLastExitCode"/> は **直近 2 分**の Updater ログしか見ない。ところが置換に失敗した
-        /// 場合 Updater は Manager を起動し直さない (restart は成功時のみ) ので、ユーザーが手動で管理ソフトを
-        /// 立ち上げるのは 2 分後とは限らず、翌朝ということもある。その時 exit code は読めず、CHANGELOG 由来の
-        /// 版数で「最新版を実行中」= ボタン無効に戻ってしまう (= #440 と同じ行き止まり)。
-        /// 時間に依存しない事実として残す。
+        /// Manager は Updater の**プロセス終了コードを受け取れない** (受け取るには待つ必要があるが、
+        /// 待っていると dir を置換できない)。そのため従来は「ログ末尾 20 行に `[ERROR]` があれば失敗」
+        /// という推測をしていた。ログは人間向けの副産物であって API ではなく、致命的でない Error 行で
+        /// 誤判定するうえ「どの実行の話か」も分からない (だから直近 2 分という窓が要った)。
+        /// Updater が答えを持っているのだから、解析で復元せず**消えない場所に書いてもらう**。
         /// </summary>
-        public static void MarkUpdateFailed()
+        public sealed class UpdateRunResult
         {
-            try { File.WriteAllText(UpdateFailedMarkerPath, DateTime.Now.ToString("s"), System.Text.Encoding.UTF8); }
-            catch (Exception ex) { Logger.Warn("[UpdaterClient] 失敗マーカーの書込みに失敗 (継続): " + ex.Message); }
+            public int ExitCode { get; set; }
+            public bool Success { get; set; }
+            /// <summary>この更新で入るはずだった Manager の FileVersion (読めなければ null)。</summary>
+            public string TargetManagerVersion { get; set; }
         }
 
-        /// <summary>(#440) アップデートが完了したことを確認できたら消す。</summary>
-        public static void ClearUpdateFailedMark()
+        internal static string UpdateResultPath
         {
-            try { if (File.Exists(UpdateFailedMarkerPath)) File.Delete(UpdateFailedMarkerPath); }
-            catch (Exception ex) { Logger.Warn("[UpdaterClient] 失敗マーカーの削除に失敗 (継続): " + ex.Message); }
+            get { return Path.Combine(PathManager.BaseDirectory, ".update_result"); }
         }
 
-        /// <summary>(#440) 未完了マーカーが残っているか。</summary>
-        public static bool HasUpdateFailedMark()
+        /// <summary>
+        /// (#440) 実行結果を読む。ファイルが無ければ null (= 旧 Updater か、まだ一度も更新していない)。
+        /// 呼び出し側は null のとき従来の <see cref="TryLoadLastExitCode"/> にフォールバックする。
+        /// </summary>
+        public static UpdateRunResult TryLoadUpdateResult()
         {
-            try { return File.Exists(UpdateFailedMarkerPath); }
-            catch { return false; }
+            try
+            {
+                if (!File.Exists(UpdateResultPath)) return null;
+                string json = File.ReadAllText(UpdateResultPath, System.Text.Encoding.UTF8);
+                var dto = JsonCompat.Deserialize<UpdateRunResult>(json);
+                return dto;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[UpdaterClient] .update_result を読めませんでした (従来の判定に fallback): " + ex.Message);
+                return null;
+            }
         }
 
-        private static string UpdateFailedMarkerPath
+        /// <summary>
+        /// (#440) 実行結果を消す。**成功を確認した時点で呼ぶ** — 成功はもう覚えておく必要が無い。
+        /// 失敗は残す (アップデートタブが再試行ボタンを有効に戻すために後で参照するため)。
+        /// </summary>
+        public static void ClearUpdateResult()
         {
-            get { return Path.Combine(PathManager.BaseDirectory, ".update_failed"); }
+            try { if (File.Exists(UpdateResultPath)) File.Delete(UpdateResultPath); }
+            catch (Exception ex) { Logger.Warn("[UpdaterClient] .update_result の削除に失敗 (継続): " + ex.Message); }
         }
 
+        /// <summary>
+        /// (#440) 「前回のアップデートが未完了のまま残っているか」。
+        ///
+        /// 残っている失敗記録が**まだ有効か**をここで判断する。実行中の Manager が
+        /// `TargetManagerVersion` に達していれば、その失敗は既に解消済み (手動で `Install.bat` を
+        /// 実行して直した場合など) なので記録を消して false を返す。**時間ではなく事実で失効させる。**
+        /// </summary>
+        public static bool HasUnresolvedFailure()
+        {
+            UpdateRunResult result = TryLoadUpdateResult();
+            if (result == null) return false;
+            if (result.Success)
+            {
+                ClearUpdateResult();
+                return false;
+            }
+            Version target;
+            Version running = VersionInventory.ReadManagerVersion();
+            if (running != null
+                && !string.IsNullOrEmpty(result.TargetManagerVersion)
+                && Version.TryParse(result.TargetManagerVersion, out target)
+                && running >= target)
+            {
+                Logger.Info("[UpdaterClient] 前回の失敗記録は解消済みのため削除します (実行中 v"
+                    + running + " >= 目標 v" + target + ")");
+                ClearUpdateResult();
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// (旧経路) Updater ログの末尾から成否を推測する。**`TryLoadUpdateResult` が使えないときだけ**
+        /// 使う fallback (= 旧 Updater が書いた実行結果ファイルが無いケース)。
+        ///
+        /// 末尾 20 行に `[ERROR]` があれば失敗とみなすヒューリスティックで、致命的でない Error 行でも
+        /// 失敗に倒れる。「どの実行の話か」が分からないため直近 2 分のログしか見ない。
+        /// 新しい判定はすべて <see cref="TryLoadUpdateResult"/> を一次情報にすること (#440)。
+        /// </summary>
         public static int? TryLoadLastExitCode()
         {
             string dir = PathManager.UpdaterLogDir;

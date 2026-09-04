@@ -1596,6 +1596,48 @@ function Build-Manager {
 # SPEC §3.7.4: Manager 置換 + 再起動の最小 CLI。.NET Framework 4.8 で SQLite / WindowsAPICodePack
 # 等の外部依存を持たない単純な Console app なので、Build-Manager の dotnet publish (net10
 # self-contained single-file) のような重い publish 不要。net48 を msbuild 直叩きでよい。
+function Assert-UpdaterBitness {
+    param([string]$ExePath)
+
+    # (#440) Updater が 32bit で焼かれていないことを機械強制する。
+    #
+    # `PlatformTarget=AnyCPU` の .NET Framework exe は `Prefer32Bit` の既定が **true** で 32bit として
+    # 起動する。Manager は Bundle v0.9.0 (#258) 以降 .NET 10 の 64bit 単一ファイルなので、32bit の
+    # Updater からは Manager プロセスの MainModule を読めず、ProcessWaiter が「既に終了済み」と誤判定
+    # して待機を skip → 起動中のまま Manager dir を rename → 失敗 → ロールバック、となる。
+    # **これでアプリ内アップデートが 2 リリース分ずっと壊れていた (#440)。**
+    #
+    # csproj には `<Prefer32Bit>false</Prefer32Bit>` があるが、Visual Studio が per-configuration の
+    # PropertyGroup に `true` を書き戻すと**後勝ちで無言に revert する**。SPEC §3.7.6.1 が「必須」と
+    # 書いているだけでは守られないので、他の版数 stamp 系 (Assert-PublishedManagerVersion /
+    # Assert-ExportedLauncherVersion) と同じく公開前に hard fail させる。
+    #
+    # 判定に PE ヘッダの machine は使えない (AnyCPU は常に I386/PE32)。COR フラグを見る必要があるので
+    # `Assembly.GetPEKind` を使う。ReflectionOnlyLoadFrom はコードを実行しない。
+    if (-not (Test-Path $ExePath)) {
+        Fail "Updater の bitness を検証できません (exe が見つかりません): $ExePath"
+    }
+    try {
+        $asm = [System.Reflection.Assembly]::ReflectionOnlyLoadFrom($ExePath)
+        $pek = [System.Reflection.PortableExecutableKinds]::ILOnly
+        $mach = [System.Reflection.ImageFileMachine]::I386
+        $asm.ManifestModule.GetPEKind([ref]$pek, [ref]$mach)
+    } catch {
+        Fail "Updater の PEKind を読めませんでした: $ExePath`n        $($_.Exception.Message)"
+    }
+    $kindText = $pek.ToString()
+    if ($kindText -match 'Preferred32Bit' -or $kindText -match 'Required32Bit') {
+        Fail @"
+Updater が 32bit として焼かれています (PEKind: $kindText)。
+        32bit の Updater は 64bit の Manager プロセスを識別できず、アプリ内アップデートが
+        「Manager だけ更新されない」形で静かに失敗します (#440)。
+        Companions/Updater/TonePrism_Updater.csproj に <Prefer32Bit>false</Prefer32Bit> があるか、
+        per-configuration の PropertyGroup で true に上書きされていないかを確認してください。
+"@
+    }
+    Write-Ok "Updater bitness OK (PEKind: $kindText = 32bit 指定なし)"
+}
+
 function Build-Updater {
     Write-Step "Updater を msbuild で Release ビルド"
 
@@ -1624,6 +1666,9 @@ function Build-Updater {
         Fail "Updater の msbuild に失敗しました (exit code: $exitCode)"
     }
     Write-Ok "msbuild 完了"
+
+    # (#440) 32bit で焼かれていないことを公開前に hard fail で確認する。
+    Assert-UpdaterBitness -ExePath (Join-Path $binRelease 'TonePrism_Updater.exe')
 
     # bin/Release/ から staging へコピー (*.pdb 除外)
     # 配布構造は SPEC §3.7.1 / §2.4 に従い `<staging>/files/Companions/Updater/` 配下に配置

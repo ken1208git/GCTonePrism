@@ -54,6 +54,7 @@
     <Compile Include="Logger.cs" />
     <Compile Include="ProcessWaiter.cs" />
     <Compile Include="FileReplacer.cs" />
+    <Compile Include="UpdateResult.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
