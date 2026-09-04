@@ -326,6 +326,19 @@ namespace TonePrism.Manager
                 others, launcherOthers, operationDescription);
         }
 
+        /// <summary>
+        /// (#449 診断) `MainForm_Load` が戻ったかを記録する。診断ログの読み取り可否判定にのみ使う。
+        /// `Load` イベントは designer 配線なので `base.OnLoad` が `MainForm_Load` を呼ぶ。
+        /// **本体は巨大で early return も複数あるため、メソッドを包まずここで `finally` を張る。**
+        /// </summary>
+        private bool _loadReturned;
+
+        protected override void OnLoad(EventArgs e)
+        {
+            try { base.OnLoad(e); }
+            finally { _loadReturned = true; }
+        }
+
         private void MainForm_Load(object sender, EventArgs e)
         {
             // (#245 PR5 / レビュー round5 Finding 1) 起動 init の前半 (DB migration / session init / 早期モーダル) も
@@ -863,23 +876,49 @@ namespace TonePrism.Manager
                 // 再表示されるなら MainForm はタスクバーに残り、SPEC §3.8.2.1 の「起動後は Hide 済み」
                 // という前提と、H-1 の深刻度説明を訂正する必要がある。
                 // **結論が出たらこのログは削除してよい。**
-                Logger.Info("[MainForm] (#449 診断) Hide 直後: Visible=" + Visible
-                    + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle)));
+                // **1 本目も try/catch で包む (レビュー Low)。** ここは「以降は失敗してもフォールバック
+                // しない」の境界より上なので、一時的な診断コードで例外が出ると外側 catch に落ち、
+                // Hide 済みの状態で FallbackToVisibleMainForm (コメント自身が「死蔵になる」と書く経路) と
+                // ShellWindow.Instance = null が走り、可視シェルがあるのに owner に選ばれなくなる。
                 try
                 {
-                    BeginInvoke(new Action(() =>
-                    {
-                        try
-                        {
-                            Logger.Info("[MainForm] (#449 診断) Load 完了後: Visible=" + Visible
-                                + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle))
-                                + " Opacity=" + Opacity
-                                + " ShowInTaskbar=" + ShowInTaskbar);
-                        }
-                        catch { /* 診断ログの失敗は無視 */ }
-                    }));
+                    Logger.Info("[MainForm] (#449 診断) Hide 直後: Visible=" + Visible
+                        + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle)));
                 }
                 catch { /* 診断ログの失敗は無視 */ }
+
+                // **早発火を機械的に捨てる (レビュー Medium)。** BeginInvoke はメッセージをポストする
+                // だけなので、Load から戻る前に誰かがポンプすると そこで dispatch される。
+                // 直後の StartBackgroundUpdateCheckIfDue は cache が温いと同期的に MessageBox へ入り、
+                // その modal loop が全スレッドメッセージをポンプする。その時点では SetVisibleCore が
+                // 再開しておらず ShowWindow も呼ばれていないので、**Hide の挙動と無関係に
+                // False/False が記録される** — しかも cache が温い起動こそ #449 の再現条件で、
+                // いちばん誤読しやすい形だった。`_loadReturned` を見て、早すぎる読みは捨てて再ポストする。
+                int probeRetries = 0;
+                Action probe = null;
+                probe = () =>
+                {
+                    try
+                    {
+                        if (!_loadReturned)
+                        {
+                            if (++probeRetries > 20)
+                            {
+                                Logger.Warn("[MainForm] (#449 診断) Load 完了を待てませんでした、計測を諦めます");
+                                return;
+                            }
+                            BeginInvoke(probe);
+                            return;
+                        }
+                        Logger.Info("[MainForm] (#449 診断) Load 完了後: Visible=" + Visible
+                            + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle))
+                            + " Opacity=" + Opacity
+                            + " ShowInTaskbar=" + ShowInTaskbar
+                            + " (再ポスト " + probeRetries + " 回)");
+                    }
+                    catch { /* 診断ログの失敗は無視 */ }
+                };
+                try { BeginInvoke(probe); } catch { /* 診断ログの失敗は無視 */ }
                 // (#246 / レビュー #4) ここから先 (前面化・ステータス反映) は **シェル表示済み** なので、失敗しても
                 // フォールバックせずログのみにする。理由: Hide() 後は外側 catch の Opacity=1 では可視化できず
                 // (Visible=false のまま) フォールバックが死蔵になる + シェルは既に出ているのでフォールバック不要。
