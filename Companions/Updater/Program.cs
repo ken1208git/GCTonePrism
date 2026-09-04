@@ -33,10 +33,15 @@ namespace TonePrism.Updater
     ///   4 = ファイル置換失敗 (rollback 実施済、旧 Manager 復元)。auto-recovery 経路 (Codex round 2 P1 #3) も同 code
     ///   5 = rollback も失敗した致命的状態 (手動復旧必要、`.bak` から手動 rename)。新 Manager 起動失敗時の
     ///       RollbackFromBak も失敗した case を含む (round 6 Codex P1)
-    ///   6 = 新 Manager.exe 起動失敗 (Process.Start null/throw、restart-exe 不在、spawn 直後 early-crash 等。
+    ///   6 = 新 Manager.exe 起動失敗、または **置換後の版数が持ち込んだものと不一致** (#440)
+    ///       (Process.Start null/throw、restart-exe 不在、spawn 直後 early-crash、版数不一致。
     ///       round 6 Codex P1 + Medium-5 で失敗時に RollbackFromBak で旧 Manager 復元)
     ///   7 = force-kill 試行 bounded retry (3 回) 超過 (permission denied 等の構造的問題、機械的再試行は無意味)
     ///   8 = process enumeration 連続失敗 (5 回、IPC/WMI 一時障害、短時間後の再試行に意味あり)
+    ///   9 = Manager プロセスの同一性を確認できないまま上限 (60 秒) に達した (#440)。
+    ///       **exit 3 と分けてある**: 3 の推奨アクションは「強制終了して再試行」だが、この経路は
+    ///       同一性未確認のプロセスを kill しない方針なので、案内どおり操作すると同じところに戻る
+    ///       行き止まりループになる。9 は「手動で Manager を閉じてから再試行」に倒す
     /// </summary>
     internal static class Program
     {

@@ -178,14 +178,6 @@ namespace TonePrism.Manager.Services
         }
 
         /// <summary>
-        /// `<install>/logs/updater/` 配下の直近 **2 分以内** のログから Updater の exit code を回収する。
-        /// 新 Manager が起動した直後 (MainForm_Load) で呼んで「前回アップデート結果」を UI バナーに出す用途。
-        /// 該当ログが見つからない / parse 失敗時は null。
-        ///
-        /// **注意 (round 2 M8)**: 旧 docstring は「1 分以内」と書いていたが実装は `AddMinutes(-2)` (= 2 分)、
-        /// round 1 H3 fix で書き直した際の追従漏れ。docstring を実装に揃えて訂正。
-        /// </summary>
-        /// <summary>
         /// (#440) Updater が書き残した実行結果 (`&lt;install&gt;/.update_result`)。
         ///
         /// Manager は Updater の**プロセス終了コードを受け取れない** (受け取るには待つ必要があるが、
@@ -231,13 +223,29 @@ namespace TonePrism.Manager.Services
                 if (!File.Exists(UpdateResultPath)) return null;
                 string json = File.ReadAllText(UpdateResultPath, System.Text.Encoding.UTF8);
                 var dto = JsonCompat.Deserialize<UpdateRunResult>(json);
+                // (レビュー Medium) parse できても中身が空なら「読めなかった」と同じ扱いにする。
                 return dto;
             }
             catch (Exception ex)
             {
-                Logger.Warn("[UpdaterClient] .update_result を読めませんでした (従来の判定に fallback): " + ex.Message);
+                Logger.Warn("[UpdaterClient] .update_result を読めませんでした: " + ex.Message);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// (レビュー Medium) **「ファイルが無い」と「あるが読めない」を区別する。**
+        ///
+        /// <see cref="TryLoadUpdateResult"/> はどちらでも null を返すが、消費側での意味は正反対:
+        /// 「無い」は旧 Updater / 未更新（＝失敗の証拠ではない）、「読めない」は判定不能（＝失敗とも
+        /// 成功とも言えない）。両者を混ぜると、成功した更新でファイルがロック・破損していただけで
+        /// 偽の「✗ アップデート未完了」を出してしまう。`success` フィールドを拒否したのと同じ理由
+        /// （「欠けている」と「false」を区別できない形にしない）。
+        /// </summary>
+        public static bool UpdateResultFileExists()
+        {
+            try { return File.Exists(UpdateResultPath); }
+            catch { return false; }
         }
 
         /// <summary>
@@ -306,46 +314,35 @@ namespace TonePrism.Manager.Services
                 ClearUpdateResult();
                 return false;
             }
-            Version target;
-            Version running = VersionInventory.ReadManagerVersion();
-            if (running != null
-                && !string.IsNullOrEmpty(result.TargetManagerVersion)
-                && Version.TryParse(result.TargetManagerVersion, out target)
-                // **3-part で比べる。** running は AssemblyVersion、target は apphost の FileVersion で
-                // SoT が違い、リリースゲートも 3-part までしか一致を強制しない。4-part だと revision の
-                // drift で失効条件を満たせず、失敗記録が永久に残る (MainForm 側と粒度を揃える)。
-                && CompareThreePart(running, target) >= 0)
-            {
-                Logger.Info("[UpdaterClient] 前回の失敗記録は解消済みのため削除します (実行中 v"
-                    + running + " >= 目標 v" + target + ")");
-                ClearUpdateResult();
-                return false;
-            }
+            // **版数による自動失効はしない (レビュー High-1)。**
+            //
+            // 以前は「実行中の版数が目標に追いついたら解消済み」として記録を消していたが、
+            // **Manager の版数が変わらない Bundle リリース** (Launcher だけ上げた等) では
+            // 失敗した瞬間から `running == target` が成立し、最初の参照で即座に消えてしまう。
+            // すると起動時ダイアログが「✗ 未完了 / タブからもう一度お試しください」と案内した直後に、
+            // そのタブが「最新版を実行中」+ ボタン無効になる = 案内した先が行き止まり、という
+            // #440 でまさに直そうとしている状態が残っていた。
+            //
+            // しかも同じファイルを MainForm は生の成否で、ここは版数失効つきで解釈していた
+            // (= 消費者ごとに意味が違う) のが根。不変条件を 1 本にする:
+            //
+            //   **失敗の記録が残っている限り再試行できる。消えるのは「成功を確認したとき」か
+            //     「次の試行が上書きしたとき」だけ。**
+            //
+            // 代償は、手動で Install.bat から復旧した場合に表示が残ること。ただしボタンは有効なので
+            // 一度押せば同版が再適用されて成功記録に変わり解消する (行き止まりにはならない)。
             return true;
         }
 
         /// <summary>
-        /// (旧経路) Updater ログの末尾から成否を推測する。**`TryLoadUpdateResult` が使えないときだけ**
-        /// 使う fallback (= 旧 Updater が書いた実行結果ファイルが無いケース)。
+        /// (旧経路) `&lt;install&gt;/logs/updater/` 配下の**直近 2 分以内**のログ末尾 20 行を走査し、
+        /// `[ERROR]` があれば失敗とみなして exit code を推測する。
         ///
-        /// 末尾 20 行に `[ERROR]` があれば失敗とみなすヒューリスティックで、致命的でない Error 行でも
-        /// 失敗に倒れる。「どの実行の話か」が分からないため直近 2 分のログしか見ない。
-        /// 新しい判定はすべて <see cref="TryLoadUpdateResult"/> を一次情報にすること (#440)。
+        /// **`TryLoadUpdateResult` が使えないときだけの fallback** (= 旧 Updater で実行結果ファイルが
+        /// 無いケース)。致命的でない `Logger.Error` でも失敗に倒れ、「どの実行の話か」も分からないため
+        /// 2 分窓が必要という、二重に当てにならない推測。
+        /// **新しい判定はすべて <see cref="TryLoadUpdateResult"/> を一次情報にすること (#440)。**
         /// </summary>
-        /// <summary>
-        /// 版数を 3-part (major.minor.build) で比較する。revision は無視する。
-        /// AssemblyVersion と FileVersion は SoT が違い、リリースゲートも 3-part までしか一致を
-        /// 強制しないため、4-part で比べると revision drift だけで判定が壊れる。
-        /// </summary>
-        private static int CompareThreePart(Version a, Version b)
-        {
-            if (a.Major != b.Major) return a.Major.CompareTo(b.Major);
-            if (a.Minor != b.Minor) return a.Minor.CompareTo(b.Minor);
-            int ab = a.Build < 0 ? 0 : a.Build;
-            int bb = b.Build < 0 ? 0 : b.Build;
-            return ab.CompareTo(bb);
-        }
-
         public static int? TryLoadLastExitCode()
         {
             string dir = PathManager.UpdaterLogDir;

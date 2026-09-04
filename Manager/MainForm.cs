@@ -1331,7 +1331,12 @@ namespace TonePrism.Manager
             // 特定できる。ここを見逃すと #440 と同じ「壊れているのに ✓ と言う」に戻る。
             //
             // v0.11.0 → v0.11.1 の 1 回だけは旧 Manager が申し送りを書く (版数なし) ため発火しない。
-            bool updaterLeftNoTrace = !string.IsNullOrEmpty(expectedManagerVersion) && runResult == null;
+            // (レビュー Medium) **「ファイルが無い」と「あるが読めない」を区別する。**
+            // どちらも TryLoadUpdateResult は null を返すが、意味は正反対 — 「無い」は
+            // Updater が痕跡を残さず終わった証拠になりうる一方、「読めない」は単に判定できないだけ。
+            // 混ぜると、成功した更新でファイルがロック / 破損していただけで偽の「✗ 未完了」を出す。
+            bool resultFileMissing = !Services.UpdaterClient.UpdateResultFileExists();
+            bool updaterLeftNoTrace = !string.IsNullOrEmpty(expectedManagerVersion) && resultFileMissing;
             if (updaterLeftNoTrace)
             {
                 detail = "更新プログラムが結果を残さずに終了しました";
@@ -1356,7 +1361,10 @@ namespace TonePrism.Manager
                 // 手掛かりが無くなり、手動で Install.bat から復旧しても警告が残り続ける。
                 // しかもその場合の失敗判定はログ推測 (末尾 20 行の [ERROR]) 由来で当てにならない。
                 // 当てにならない根拠で消せない記録を残すくらいなら、記録しない方が正しい。
-                if (runResult == null && !string.IsNullOrEmpty(expectedManagerVersion))
+                // 記録が既にあるなら上書きしない。無いときだけ Manager 側で残す。
+                // 期待版数が取れないときは記録しない — その場合の失敗判定はログ推測 (末尾 20 行の
+                // [ERROR]) 由来で当てにならず、当てにならない根拠で貼りつく状態を作るべきではない。
+                if (resultFileMissing && !string.IsNullOrEmpty(expectedManagerVersion))
                 {
                     Services.UpdaterClient.RecordFailureWithoutUpdaterResult(expectedManagerVersion);
                 }

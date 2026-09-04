@@ -53,6 +53,8 @@ namespace TonePrism.Manager.Controls
             int? lastExit = (lastRun != null && lastRun.ExitCode.HasValue)
                 ? lastRun.ExitCode
                 : UpdaterClient.TryLoadLastExitCode();
+            // 注: バナーはここで 1 度読むだけ。IsPreviousUpdateFailed (ApplyResult 経由) が
+            // 記録を消す場合があるので、消える前に読んでおく。
             if (lastExit.HasValue)
             {
                 ShowPreviousUpdateBanner(lastExit.Value);
@@ -346,9 +348,10 @@ namespace TonePrism.Manager.Controls
             // 更新成功の直後に旧ログ推測へ落ち、Step 4 の best-effort な .bak 削除失敗 (Logger.Error) を
             // 拾って「前回のアップデートが完了していません」を出す — 数秒前に「✓ 完了」を出した同じ画面で。
             bool failed;
-            if (UpdaterClient.TryLoadUpdateResult() != null)
+            if (UpdaterClient.UpdateResultFileExists())
             {
-                // 実行中の Manager が目標版数に達していれば失敗は解消済みなので、記録ごと失効させる。
+                // 記録がある限り、それが一次情報。読めなければ HasUnresolvedFailure が
+                // 判定材料から外す (「読めない」を「失敗」とも「成功」とも読まない)。
                 failed = UpdaterClient.HasUnresolvedFailure();
             }
             else

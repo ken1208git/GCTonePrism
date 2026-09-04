@@ -69,28 +69,30 @@ namespace TonePrism.Manager.Tests
         }
 
         [Fact]
-        public void FailureRecord_Expires_WhenRunningVersionCaughtUp()
+        public void FailureRecord_Survives_EvenWhenRunningVersionMatchesTarget()
         {
-            // 実行中の Manager が目標版数に達していれば、その失敗は解消済み
-            // (手動で Install.bat から復旧した場合など)。時間ではなく事実で失効させる。
+            // **版数では失効させない (レビュー High-1)。**
+            // 以前は「実行中が目標に追いついたら解消済み」として消していたが、Manager の版数が
+            // 変わらない Bundle リリース (Launcher だけ上げた等) では失敗した瞬間から一致するので、
+            // 最初の参照で即座に消えてしまう。すると起動時ダイアログが「タブからもう一度」と案内した
+            // 直後に、そのタブが「最新版を実行中」+ ボタン無効になる = 案内先が行き止まりになる。
             Version running = VersionInventory.ReadManagerVersion();
             Assert.NotNull(running);
             WriteResult(4, running.ToString(3) + ".0");
-            Assert.False(UpdaterClient.HasUnresolvedFailure());
-            Assert.False(ResultFileExists());
+            Assert.True(UpdaterClient.HasUnresolvedFailure());
+            Assert.True(ResultFileExists());
         }
 
         [Fact]
-        public void FailureRecord_Expires_EvenWhenOnlyRevisionDiffers()
+        public void FileExists_DistinguishesMissingFromUnreadable()
         {
-            // **3-part 比較**。running は AssemblyVersion、target は apphost の FileVersion で SoT が違い、
-            // リリースゲートも 3-part までしか一致を強制しない。4-part で比べると revision の drift だけで
-            // 失効条件を満たせず、失敗記録が永久に残る (= タブが恒久的に「未完了」と言い続ける)。
-            Version running = VersionInventory.ReadManagerVersion();
-            Assert.NotNull(running);
-            WriteResult(4, string.Format("{0}.{1}.{2}.{3}", running.Major, running.Minor,
-                running.Build < 0 ? 0 : running.Build, 99));
-            Assert.False(UpdaterClient.HasUnresolvedFailure());
+            // (レビュー Medium) 「無い」と「あるが読めない」は消費側で意味が正反対。
+            // TryLoadUpdateResult はどちらも null を返すので、存在確認を別に持つ。
+            Assert.False(UpdaterClient.UpdateResultFileExists());
+            File.WriteAllText(Path.Combine(_root, ".update_result"), "これは JSON ではない",
+                new System.Text.UTF8Encoding(false));
+            Assert.True(UpdaterClient.UpdateResultFileExists());
+            Assert.Null(UpdaterClient.TryLoadUpdateResult());
         }
 
         [Fact]
@@ -112,8 +114,9 @@ namespace TonePrism.Manager.Tests
         [Fact]
         public void FailureWithoutTargetVersion_NeverExpiresByVersion()
         {
-            // 目標版数が無い記録は版数では失効できない (次の更新が上書きするまで残る)。
-            // だからこそ MainForm 側は「期待版数が取れないときは記録しない」ようにしてある。
+            // 目標版数の有無に関わらず、失敗の記録は残る (版数では失効させない方針)。
+            // MainForm 側が「期待版数が取れないときは記録しない」のは、その場合の失敗判定が
+            // ログ推測由来で当てにならないためであって、失効可否の話ではない。
             WriteResult(4, null);
             Assert.True(UpdaterClient.HasUnresolvedFailure());
             Assert.True(ResultFileExists());
