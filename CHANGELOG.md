@@ -2563,7 +2563,7 @@ Manager の MainForm は WPF シェル移行 (#245) 後、`Opacity = 0` で起�
 **修正**
 
 - `ShowShellAsMain()` を更新チェックより**前**へ移し、タイミング依存を消す
-- モーダル owner を `VisibleModalOwner()` に集約。**今アクティブな可視モーダル → 可視シェル → 物理表示されている MainForm → `null`** の順に返す
+- モーダル owner を `VisibleModalOwnerOrNull()` に集約。**今アクティブな可視モーダル → 可視シェル → 物理表示されている MainForm → `null`** の順に返す
   - **可視判定に `Control.Visible` を使わない**。WinForms は最初の物理表示より前 (= `Form_Load` 実行中) でも `Visible == true` を返す（実測確認）。`Visible` を根拠にすると「一度も表示されていない窓」を可視と誤認し、#449 をそのまま再生産する。Win32 の `IsWindowVisible` で判定する
   - **アクティブな可視モーダルを最優先する理由**: ゲーム追加 / 編集フォームは `ShowDialog(shellOwner)` で開かれ、その間シェル HWND は `EnableWindow(false)` されている。内側から出すモーダルの owner をシェルにすると、**Win32 の MessageBox は破棄時に owner を `EnableWindow(true)` するため、閉じた瞬間にシェルが再有効化され、編集フォームが開いたままシェルを操作できてしまう**（別種の再入）
 - `MakeMainFormVisible()`: **`if (!Visible)` でガードせず無条件に `Show()` + `Activate()`**（ガードすると Load 中は skip されて表示されない。実測で無条件 Show なら `IsWindowVisible=True` になることを確認）
@@ -2579,9 +2579,10 @@ WinForms の `MessageBox.Show` は owner が `null` のとき**呼び出しス�
 
 - **同時起動の競合 (Startup)**: 不可視 MainForm を渡していた（`SessionConflictDialog` の docstring が「owner を **visible 状態で**渡せば」を API contract と明記しており契約違反）。**この dialog は「シェルを先に出す」解決が取れない** — 残りの初期化を止めるゲートであり、シェルはまだ存在せず、出せばゲートの意味が消える。可視 owner を作ってから出す形にした
 - **同時起動の競合 (EditOperation) / 他 PC 復元中の警告 / バックアップ中の終了確認**: シェル表示後は MainForm が `Hide()` 済みで**恒久的に契約違反**だった。`ShellOwner` の docstring が「隠し MainForm を owner にすると可視シェルが無効化されず擬似モーダルになる」とこの経路を名指しで否定していた。起動時ゲートより発火頻度が高い（別 Manager 稼働中なら書込操作のたび）
-- **ログ保存先の移行通知 (#201)**: `this` 直渡しはやめたが、**修正が完了した扱いにはしない**。呼び出しがシェル生成前で `VisibleModalOwner()` が必ず `null` を返すため、実効は `GetActiveWindow()` 依存 = 下の「未解決」と同じ状態。SPEC の未解決リストに含めてある
+- **ログ保存先の移行通知 (#201)**: `this` 直渡しはやめたが、**修正が完了した扱いにはしない**。呼び出しがシェル生成前で `VisibleModalOwnerOrNull()` が必ず `null` を返すため、実効は `GetActiveWindow()` 依存 = 下の「未解決」と同じ状態。SPEC の未解決リストに含めてある
 - DB 初期化プロンプト ×2 / 更新の完了・未完了・確認不能 ×3 / `Program.cs` の起動エラー ×2 は**元から owner を渡していない**。**だから表面化していなかった** — ただし上記のとおり `null` は保証ではないので「未解決」として扱う
 - 起動失敗フォールバック (`FallbackToVisibleMainForm`) は可視化してから `this` を渡すので規約を満たす（例外ではなく適用例）
+- **監査で見つかった別の欠陥 (#456)**: 通知の「はい」を押しても**シェルは何も遷移しない**。実装が `Hide()` 済み MainForm のタブ切替のままで、#245 の置き去り経路。**しかも本リリースの順序入替により「通知時点でシェルが必ず表示済み」が確定したため、この不整合は常時発生するようになった**（従来は cache 冷時のみ）。修正は #456 に分離
 
 **付随して分かったこと**
 

@@ -129,10 +129,17 @@ namespace TonePrism.Manager.Services
                 Logger.Info("[SessionConflictDialog]   - Launcher: pc=" + info.PcName + " pid=" + info.Pid + " ver=" + info.LauncherVersion);
             }
 
-            // (#186 round 3 確定) Startup context の taskbar entry 不在 / focus 喪失で見失う UI bug は
-            // **caller (`MainForm_Load`) 側で `BeginInvoke` defer + `ContinueLoadAfterSessionCheck`
-            // chain pattern を採用** することで解消。本 dialog 自身は標準 owner-modal MessageBox 呼出
-            // に留め、Startup / EditOperation の文言切替のみが本関数の責務。
+            // (#186 round 3) Startup context の taskbar entry 不在 / focus 喪失で見失う UI bug は
+            // caller 側の `BeginInvoke` defer + `ContinueLoadAfterSessionCheck` chain pattern で
+            // 解消した「はず」だった。
+            //
+            // **(#449) これは解消していなかった。** defer しても owner が「タスクバーに出ていない窓」
+            // (`Opacity=0` / `Hide()` 済みの MainForm) のままだったため、所有モーダルを前面化する
+            // 導線が無く、実際に起動が 8 分間固まった。**決定要因は defer の有無ではなく
+            // owner がタスクバーに出ているか**。規約は SPEC §3.8.2.1 を参照。
+            //
+            // 本 dialog 自身は標準 owner-modal MessageBox 呼出に留め、Startup / EditOperation の
+            // 文言切替のみが本関数の責務、という切り分けは維持する (owner の適格性は caller の責務)。
             //
             // 詳細 rationale (round 1 `MessageBoxOptions.DefaultDesktopOnly` 試行 → user feedback
             // 「常時最前面うざい」で撤回 / round 2 BeginInvoke defer のみ → reviewer High 指摘

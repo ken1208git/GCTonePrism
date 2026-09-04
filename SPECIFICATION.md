@@ -1383,7 +1383,7 @@ Manager の MainForm は WPF シェル移行 (#245) 後、ctor で `Opacity = 0`
 
 > **未決着 (#449)**: 「`ShowShellAsMain` の `Hide()` が `MainForm_Load` の境界を越えて維持されるか」は結論が出ていない。レビュー側は複製アプリ 6 構成（.NET FW 4.8 / net10、`Opacity` 有無、WPF 込みの構造複製）すべてで**post-Load に再表示される**（`Visible=True` / `IsWindowVisible=True`）と実測し、こちら側の計測（PowerShell ハーネス）は逆の結果だった。複製では決着しないため、`ShowShellAsMain` に診断ログを仕込んで**実機で確定させる**。ログの `LoadReturned=` が `False` の行は**判定に使わないこと** — `BeginInvoke` は `MainForm_Load` から戻る前でも、ネストしたメッセージポンプ（cache が温いときの通知 MessageBox 等）があれば dispatch される。その時点では `SetVisibleCore` が再開しておらず `ShowWindow` も呼ばれていないため、Hide の挙動と無関係に `False/False` が出る（実装側で再ポストして回避済み）。再表示されるなら MainForm はタスクバーに残るので、上記「起動後は Hide 済み」と、それを根拠にした深刻度の説明を訂正すること。
 >
-> なお**どちらに転んでも本規約と実装は成立する** — `VisibleModalOwner` は `Opacity > 0` も条件にしているため、透明のまま再表示されていても MainForm は owner に選ばれない。
+> なお**どちらに転んでも本規約と実装は成立する** — `VisibleModalOwnerOrNull` は `Opacity > 0` も条件にしているため、透明のまま再表示されていても MainForm は owner に選ばれない。
 
 2026-09-04 の実害 (#449) は `MainForm_Load` が return する前 = **MainForm が一度も表示されていない状態**の窓を owner にしたことによる。起動スプラッシュ (#246) は `Topmost="False"` なので原因ではない。
 
@@ -1397,7 +1397,11 @@ WinForms の `MessageBox.Show` / `Form.ShowDialog` は **owner が `null` のと
 
 ##### 実装
 
-- `MainForm.VisibleModalOwner()`: 可視シェル (`ShellWindow.Instance` かつ `IsVisible`) → 可視 MainForm (`Visible && Opacity > 0`) → 該当なしなら `null`、の順に返す
+- `MainForm.VisibleModalOwnerOrNull()`: **4 段**で返す。
+  1. **今アクティブな可視 Form (`Form.ActiveForm`、自分自身は除く)** — これを最優先にするのは、Win32 の MessageBox が**破棄時に owner を `EnableWindow(true)` する**ため。ゲーム追加 / 編集フォームは `ShowDialog(ShellOwner.For(shell))` で開かれシェルを無効化しているので、内側から出すモーダルの owner をシェルにすると、**閉じた瞬間にシェルが再有効化され、編集フォームが開いたままシェルを操作できてしまう**（別種の再入）。内側のモーダルを owner にすれば入れ子が壊れない。なおこの Form は可視シェルに owned なので、タスクバーのシェルのボタンから `GetLastActivePopup` で辿れる = 規約を満たす（**owned でない可視 Form が active な場合はこの根拠が崩れるので、その時は `ShowInTaskbar` か owner 連鎖の確認を足すこと**）
+  2. **可視シェル** (`ShellWindow.Instance` かつ `IsVisible`)
+  3. **物理的に表示されている MainForm** (`IsWindowVisible(Handle) && Opacity > 0`) — **`Control.Visible` は使わない**（下記）
+  4. 該当なしなら `null`
   - **`IsVisible` を必ず見る**: `ShellWindow.Instance` は ctor で代入され `Closed` でしか消えないため、`Show()` が HWND 生成後に失敗すると「表示されていないシェル」の HWND が残る。生成側 (`ShowShellAsMain` の catch) でも `Instance = null` を代入して二重に閉じる
 - `MainForm.MakeMainFormVisible()`: スプラッシュを閉じ `Opacity = 1` + `Show()`。**ゲート dialog のように「必ず前面に戻せる」ことが要る場面**で owner を用意するために使う
 - **同時起動の競合 dialog (Startup) は「シェルを先に出す」解決が取れない** — 残りの初期化を止めるゲートであり、シェルはまだ存在せず、出せばゲートの意味が消える。かつ本経路は MainForm の Show 完了後に走る (`BeginInvoke` defer) ため `null` は `GetActiveWindow()` = 不可視 MainForm に倒れうる。**`MakeMainFormVisible()` で可視化してから出す**（OK なら後続の `ShowShellAsMain` が Hide してシェルに移るので可視化は一時的）
@@ -1422,8 +1426,9 @@ after Show(): Visible=True  IsWindowVisible=True    ← 無条件 Show() なら�
 - `TryShowUpdateCompletedDialog`（✓ 完了 / ✗ 未完了 / 確認できません）
 - DB 初期化プロンプト ×2
 - `Program.cs` の起動エラー ×2
-- **ログ保存先の移行通知 (#201)** — `this` 直渡しはやめたが、呼び出しがシェル生成前なので `VisibleModalOwner()` は必ず `null` を返す
-- **バックアップ中止の終了確認** — シェルの `Closed` ハンドラが先に `Instance = null` を実行してから MainForm の `Close()` に入るため、`FormClosing` の時点で `VisibleModalOwner()` は `null`
+- **ログ保存先の移行通知 (#201)** — `this` 直渡しはやめたが、呼び出しがシェル生成前なので `VisibleModalOwnerOrNull()` は `null` を返す
+- **起動時のアップデート通知で「はい」を押してもシェルが遷移しない (#456)** — 実装が `Hide()` 済み MainForm のタブ切替のままで、#245 の置き去り経路。#449 の順序入替で「通知時点でシェルが必ず表示済み」が確定したため、**この不整合は常時発生するようになった**（従来は cache 冷時のみ）
+- **バックアップ中止の終了確認** — シェルの `Closed` ハンドラが先に `Instance = null` を実行してから MainForm の `Close()` に入るため、`VisibleModalOwnerOrNull()` の step 2 は落ちる。step 1 (`Form.ActiveForm`) が拾える可能性はあるが、シェルが閉じた後なので保証はない
 
 #### 3.8.3 同 PC 重複起動 block (Named Mutex)
 

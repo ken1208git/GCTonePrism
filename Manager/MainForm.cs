@@ -172,7 +172,7 @@ namespace TonePrism.Manager
                 if (coord != null && coord.IsBackupRunning)
                 {
                     // (#449 レビュー H-1) シェル表示後は MainForm が Hide 済みなので `this` は不可視。
-                    var dr = MessageBox.Show(VisibleModalOwner(),
+                    var dr = MessageBox.Show(VisibleModalOwnerOrNull(),
                         "バックアップを中止して閉じますか？\n\n変更データ自体は保存済みです（バックアップだけが中断されます。次回起動時の最初の操作で取り直されます）。",
                         "バックアップ中", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
                     if (dr != DialogResult.Yes)
@@ -262,7 +262,7 @@ namespace TonePrism.Manager
                         Logger.Warn($"[MainForm] (H5) 他 PC '{lockOwner}' が restore lock 保有中、{operationDescription} を中止");
                         // (#449 レビュー H-1) 同上。Hide 済み MainForm を owner にすると、シェルが
                         // 無効化されず擬似モーダルになり、警告表示中にシェルを操作できてしまう。
-                        MessageBox.Show(VisibleModalOwner(),
+                        MessageBox.Show(VisibleModalOwnerOrNull(),
                             $"他 PC ({lockOwner}) が現在データベースの復元処理中です。\n\n" +
                             $"復元処理と書込操作が衝突するとデータ消失のおそれがあるため、{operationDescription} を中止します。\n" +
                             "復元完了 (通常 1 分以内) を待ってから再試行してください。",
@@ -322,7 +322,7 @@ namespace TonePrism.Manager
             // 「データが破損する恐れ」の警告中にシェルを操作できてしまう (再入)。
             // 起動時ゲートより発火頻度が高い (別 Manager 稼働中なら書込のたびに出る)。
             return SessionConflictDialog.Show(
-                VisibleModalOwner(), SessionConflictDialogContext.EditOperation,
+                VisibleModalOwnerOrNull(), SessionConflictDialogContext.EditOperation,
                 others, launcherOthers, operationDescription);
         }
 
@@ -568,12 +568,12 @@ namespace TonePrism.Manager
                         // (レビュー Medium) `MakeMainFormVisible` はスプラッシュも閉じる。OK 後の
                         // `ContinueLoadAfterSessionCheck` (パネル初期化 / LoadGames、SMB 越しで数秒)
                         // の間、進捗表示が消えて未初期化の旧 UI だけが見える状態になるのは #246 が
-                        // 埋めた穴の再発。**別 issue で「ゲート中はスプラッシュを維持する」に分離する**
+                        // 埋めた穴の再発。**#455 で「ゲート中はスプラッシュを維持する」に分離した**
                         // — ここで対処すると可視化とスプラッシュ制御を切り離す設計変更になり、
                         // 本 PR (到達可能性の修正) のスコープを超えるため。
                         MakeMainFormVisible();
                         var dialogResult = SessionConflictDialog.Show(
-                            VisibleModalOwner(), SessionConflictDialogContext.Startup,
+                            VisibleModalOwnerOrNull(), SessionConflictDialogContext.Startup,
                             otherSessionsAtStartup, launcherSessionsAtStartup);
                         if (dialogResult == DialogResult.Cancel)
                         {
@@ -849,6 +849,9 @@ namespace TonePrism.Manager
         /// </summary>
         private void ShowShellAsMain()
         {
+            // (#449 レビュー 4) 外側 catch が「シェル生成 / Show 失敗」なのか「表示後の後処理失敗」なのかを
+            // 区別するためのフラグ。catch から読むので try の外で宣言する。
+            bool shellShown = false;
             try
             {
                 Shell.ShellWindow.SharedDb = dbManager;
@@ -866,6 +869,13 @@ namespace TonePrism.Manager
                     catch (Exception ex) { Logger.Warn("[MainForm] シェル close 後の MainForm.Close 失敗: " + ex.Message); }
                 };
                 shell.Show();
+                // (#449 レビュー 4) **ここから先の失敗で `Instance = null` してはいけない。**
+                // 外側 catch は「シェル生成 / Show 失敗」専用のつもりだったが、実際には
+                // Show 成功後の SplashScreenHost.Close() / Hide() も覆っている。そこで例外が出ると
+                // **実際にはシェルが表示されているのに** Instance が消え、ProcessingDialog の
+                // タスクバー進捗が恒久 no-op になる / ShowInTaskbar が二重表示に倒れる /
+                // VisibleModalOwner が本当に可視なシェルを owner 候補から外す、という形で状態が割れる。
+                shellShown = true;
                 Shell.SplashScreenHost.Close(); // (#246) スプラッシュを閉じる
                 Hide(); // Load 完了済なので Hide で安全に裏方化 (= MainForm の窓・タスクバーボタンを消す)
 
@@ -947,7 +957,10 @@ namespace TonePrism.Manager
                 // ctor で代入され `Closed` でしか消えないため、Show が HWND 生成後に失敗するとここに
                 // 到達しても Instance が生き残り、VisibleModalOwner が「表示されていないシェル」を
                 // owner として返してしまう。IsVisible check と併せて二重に閉じる。
-                try { Shell.ShellWindow.Instance = null; } catch { }
+                //
+                // (レビュー 4) **ただし Show 成功後の失敗では消さない。** 消すとシェルが見えているのに
+                // 参照だけ失われ、状態が割れる (上の shellShown のコメント参照)。
+                if (!shellShown) { try { Shell.ShellWindow.Instance = null; } catch { } }
                 FallbackToVisibleMainForm(null);
             }
         }
@@ -1078,7 +1091,7 @@ namespace TonePrism.Manager
         /// 可視 owner を作ってから渡すこと。
         /// </para>
         /// </summary>
-        private IWin32Window VisibleModalOwner()
+        private IWin32Window VisibleModalOwnerOrNull()
         {
             // [0] **今アクティブな可視モーダルがあればそれを最優先 (レビュー High-2)。**
             //     ゲーム追加 / 編集フォームは `ShowDialog(ShellOwner.For(shell))` で開かれ、その間
@@ -1086,6 +1099,13 @@ namespace TonePrism.Manager
             //     シェルにすると、**Win32 の MessageBox は破棄時に owner を EnableWindow(true) するため、
             //     競合ダイアログを閉じた瞬間にシェルが再有効化され、編集フォームが開いたままシェルを
             //     操作できてしまう**(別種の再入)。内側のモーダルを owner にすればこの入れ子が壊れない。
+            //     **なぜこれで規約 (= owner はタスクバーに出ている窓) を満たすか (レビュー 6)**:
+            //     この経路で active になる Form は `ShowDialog(ShellOwner.For(shell))` で開かれた
+            //     ゲーム追加 / 編集フォームで、**可視シェルに owned** されている。所有連鎖があるので
+            //     タスクバーのシェルのボタンから `GetLastActivePopup` で最前面の所有モーダル
+            //     (= この MessageBox) まで辿れる。したがって自身が `ShowInTaskbar` でなくても戻せる。
+            //     **将来 owned でない可視 Form が active な瞬間に呼ばれると、この根拠は崩れる。**
+            //     その場合は `ShowInTaskbar` か owner 連鎖の確認を足すこと。
             Form active = Form.ActiveForm;
             if (active != null && active != this && !active.IsDisposed
                 && active.IsHandleCreated && NativeVisibility.IsWindowVisible(active.Handle))
@@ -1158,6 +1178,11 @@ namespace TonePrism.Manager
 
         /// <summary>
         /// 新バージョン検出時に MessageBox で通知して「アップデート」タブに誘導する (#108 Phase 4)。
+        ///
+        /// **(#456) 「はい」を押しても現在はシェルが遷移しない。** 実装は `tabControl1.SelectedTab`
+        /// = **`Hide()` 済みの MainForm** のタブ切替で、可視シェルは何も変わらない (#245 の置き去り経路)。
+        /// #449 の順序入替により「通知時点でシェルが必ず表示済み」が確定したため、**この不整合も
+        /// 常時発生するようになった** (従来は cache 冷時のみ)。修正は #456。
         /// `Status=UpdateAvailable` の case でのみ呼ばれる (Skipped / UpToDate / 失敗時は呼ばれない、
         /// = 「スキップしたバージョンが新 release で更新されるまで再通知しない」semantic を上位で保証)。
         ///
@@ -1203,13 +1228,13 @@ namespace TonePrism.Manager
                 // **owner 自身がタスクバーに出ているか** — タスクバーは `GetLastActivePopup` 経由で
                 // 所有モーダルを前面化するので、owner がタスクバーに居れば戻せる。逆に「まだ表示されて
                 // いない窓」「`Hide()` 済みの窓」を owner にすると戻す導線が消える (詳細は
-                // <see cref="VisibleModalOwner"/> / SPEC §3.8.2.1)。
+                // <see cref="VisibleModalOwnerOrNull"/> / SPEC §3.8.2.1)。
                 //
                 // owner が null のときの `MessageBox.Show` は **owner なしではなく `GetActiveWindow()`
                 // に倒れる** (レビュー H-2)。したがって三項で「owner なしオーバーロード」に分岐しても
                 // 挙動は同じなので畳んである。null は「これ以上できることが無い」の意で、到達可能性の
                 // 保証ではない。
-                dr = MessageBox.Show(VisibleModalOwner(), message, "アップデートの通知",
+                dr = MessageBox.Show(VisibleModalOwnerOrNull(), message, "アップデートの通知",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1);
             }
             catch (Exception ex)
@@ -1774,7 +1799,7 @@ namespace TonePrism.Manager
                 "設定タブの「ログ」セクションから保存先を変更できます。";
             // (#449) 起動シーケンス中なので不可視 MainForm を owner にしない。
             MessageBox.Show(
-                VisibleModalOwner(),
+                VisibleModalOwnerOrNull(),
                 body,
                 "ログの保存先の構造が変わりました",
                 MessageBoxButtons.OK,
