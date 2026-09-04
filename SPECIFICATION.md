@@ -199,7 +199,8 @@ TonePrism は、大阪府立刀根山高校パソコン部が文化祭で展示�
 - **詳細**:
   - ゲームごとのプレイ回数・プレイ時間（開始/終了時刻）を記録
   - **保存方式（#297）**: Launcher は SQLite に直接書き込まず、1 件 1 ファイルの JSON として `responses/play_records/YYYY-MM-DD/` に atomic 出力する（§6.5 / §7.5.3）。**Launcher 自身がこの JSON を直読みしてメモリ集計**し、人気順・最近プレイ等に使う（Manager の取り込みは廃止）。
-  - 実装は #297 PR2（#34）。書込フックは全終了経路が通る `game_session.gd._on_exited()`、集計は autoload（`play_stats_service` 想定）。
+  - **書き込みは実装済み**（#297 PR2 / #34、Launcher v0.12.0）: autoload `PlayRecordWriter` が `GameSession.game_started` でゲームと開始時刻を控え、`game_exited` で 1 件書き出す（`_on_exited()` は `current_game` を emit より前に null 化するため、終了時の購読者からはゲームを読めない）。共通の書き出しは `ResponsesWriter`。**サービスモードの試遊テストは `GameSession.test_session` で除外**する（#311、終了時の `ServiceMode.is_open()` 判定は 60 秒オートクローズで不正確）。`game_no` 未採番のゲームは書き出さない。
+  - **集計は未実装**（`play_stats_service` 想定）。ストアの `popular` / `recently_played` を実データで動かすのは別途。
 
 ##### 機能12: 人気ランキング表示機能
 
@@ -2162,7 +2163,7 @@ graph TB
 
 - **書き込み（Launcher 側）**:
   - プレイ記録・アンケートは 1 件 1 ファイルの JSON として `responses/<category>/YYYY-MM-DD/` の **日付フォルダ**に出力（= プレイ記録は `responses/play_records/YYYY-MM-DD/`、アンケートは `responses/surveys/YYYY-MM-DD/`）。日付フォルダにより 1 フォルダあたりのファイル数を抑え、会期日単位の集計・retention・走査が容易になる。
-  - ファイル名は `<unix_ts>-<uuid>.json`（時刻 prefix で名前順＝時系列、`uuid` で複数 PC 同時書込でも物理的に別ファイル＝衝突なし）
+  - ファイル名は `<unix_ts>-<game_no>-<uuid>.json`（時刻 prefix で名前順＝時系列、`game_no` で「どのゲームか」もファイル名だけで分かる＝人気ランキング / 最近プレイが 1 ファイルも開かずに求まる、`uuid` で複数 PC 同時書込でも物理的に別ファイル＝衝突なし）。全体アンケートは `game_no` 部分が `0`。詳細は §7.5.3
   - 書き込みは「仮ファイル名（`.tmp`）で書く → 完了後に最終ファイル名へリネーム」の atomic 方式（途中状態の JSON を読まれないため）。session_heartbeat.gd の atomic write helper を流用（実装は #297 PR2/PR3）。
   - 1 度書いたら追記しない（書き込み中の読み取り対策）。書いた後は read-only に放置（3-state の `imported/` `failed/` への移動は廃止）。
   - 共通フィールド: `type`（`play_record` / `survey`）、`source_pc`（`COMPUTERNAME` 環境変数）、`created_at`（UNIX秒）。スキーマ詳細は §7.5.3 を参照。
@@ -2184,10 +2185,10 @@ graph TB
   ├─ launcher_logs_root.json ← Manager → Launcher への path 伝搬 (§3.6、Manager 側 single-file write)
   ├─ play_records/           ← プレイ記録 drop (= Launcher が出力 + Launcher 自身が直読み集計)
   │   └─ YYYY-MM-DD/
-  │       └─ <unix_ts>-<uuid>.json
+  │       └─ <unix_ts>-<game_no>-<uuid>.json
   └─ surveys/                ← アンケート drop (= 同上、別 category)
       └─ YYYY-MM-DD/
-          └─ <unix_ts>-<uuid>.json
+          └─ <unix_ts>-<game_no>-<uuid>.json
   ```
 
   **`responses/` 直下 vs subfolder の責務分離**:
@@ -2653,14 +2654,19 @@ Install.bat により以下の構造で展開される（dev-time と同じ階�
   responses/
   ├─ play_records/
   │   └─ YYYY-MM-DD/
-  │       └─ <unix_ts>-<uuid>.json
+  │       └─ <unix_ts>-<game_no>-<uuid>.json
   └─ surveys/
       └─ YYYY-MM-DD/
-          └─ <unix_ts>-<uuid>.json
+          └─ <unix_ts>-<game_no>-<uuid>.json
   ```
 
   - **日付フォルダ** (`YYYY-MM-DD/`): 1 フォルダのファイル数を抑え、会期日単位の集計・retention・走査を容易にする。3-state（`imported/` / `failed/`）は廃止（取り込み経路が無くなったため）。
-  - **ファイル命名規則**: `<unix_ts>-<uuid>.json`（時刻 prefix で名前順＝時系列、`uuid` で複数 PC 同時書込でも物理別ファイル＝衝突なし）。
+  - **ファイル命名規則**: `<unix_ts>-<game_no>-<uuid>.json`
+    - `<unix_ts>` … 時刻 prefix。名前順＝時系列になる
+    - `<game_no>` … 対象ゲームの不変番号。**ゲームに紐づかないレコード（退出時の全体アンケート）は `0`**
+    - `<uuid>` … ランダム 32 桁 hex。複数 PC が同時に書いても物理的に別ファイル＝衝突なし
+  - **ファイル名から何が分かるか**: `game_no` を名前に持たせることで、**ストアの「人気ランキング」（ゲーム別の件数）と「最近プレイ」（最新 N 件）が 1 ファイルも開かずに求まる**。本番は SMB 共有で「ファイルを開く回数 = ネットワーク往復回数」になるため、会期中ずっと数十秒おきに走る集計からその往復を消せる意味は大きい（ローカル実測でも 3,000 件で全件パース 220ms に対し一覧のみ 13ms、SMB では差がさらに開く）。中身を開く必要があるのは プレイ時間 / `source_pc` / ★評価 / コメント / `trigger` といった、文化祭後にゆっくりやればよい分析だけになる。同じ理由で Manager の採番走査もファイル名だけを見る（本節「game_no の設計」参照）。
+  - **ファイル名と中身の重複は意図的**（`created_at` / `game_no` は両方に入り、`type` は category フォルダからも導ける）。**中身が正本、ファイル名はそれを速く読むための索引**という関係にする（DB の index がテーブル内容を複製するのと同じ）。理由は (1) レコードは単体で完結していなければならない — ファイル名は「ファイルに付いた外側の情報」に過ぎず、コピーツールによる改名・手動のフォルダ整理・zip 展開・将来の retention 処理で失われうる。取り直し不可能なデータを名前に依存させない。(2) 両者は同一の atomic write で同時に決まり書いた後は変更しないため、ズレようがない。**食い違うファイルを見つけたら中身を信じる**（外部からの改名を意味するため）。
 - **書き込み手順**（Launcher、atomic）:
   - 仮ファイル名（`.tmp`）に書き出す
   - 書き込み完了後に最終ファイル名へリネーム（途中状態を読ませない）
@@ -3231,6 +3237,7 @@ JSON がゲームを指すキーは `game_id`（文字列）ではなく `games.
 
 | 日付 | バージョン | 変更内容 | 変更者 |
 | --- | --- | --- | --- |
+| 2026-09-03 | 1.10.67 | **(#297 PR2 / #34、Launcher v0.12.0)** §機能11「プレイ記録機能」の実装状況を更新（書き込み = 実装済み / 集計 = 未実装）。書込フックを `game_session.gd._on_exited()` 直書きから **autoload `PlayRecordWriter` の 2 signal 購読**（`game_started` でゲームと開始時刻を控え `game_exited` で書く）へ改める — `_on_exited()` は `current_game = null` を emit **より前**に実行するため、終了時の購読者からは「どのゲームだったか」が読めないという実装上の制約による。共通の書き出し（日付フォルダ導出・共通フィールド付与・atomic write）は新設の `ResponsesWriter` に集約し、アンケート（#35 / PR3）と共有する。あわせて**ファイル名規則を `<unix_ts>-<uuid>.json` から `<unix_ts>-<game_no>-<uuid>.json` へ変更**（§6.5 / §7.5.3）— 人気ランキングと最近プレイが 1 ファイルも開かずに求まり、SMB でのネットワーク往復を会期中の周期集計から消せるため。全体アンケートは番号部分が `0`（本体は `null`）。ファイル名と中身の重複は意図的で、**中身が正本・ファイル名は索引**という関係を明記した。 | Kenshiro Kuroga \& Claude |
 | 2026-09-03 | 1.10.66 | **(#297 PR2、DB v24)** §7.3 `games` に **`game_no`**（不変の内部番号・UNIQUE INDEX `idx_games_game_no`）を追加し、§7.5.3 に「game_no の設計」節を新設。プレイ記録・アンケートの JSON がゲームを指すキーを `game_id`（手入力・フォルダ名兼用・**改名可**）から `game_no` へ変更する。JSON には DB の FK のような改名追随の仕組みが無く、`game_id` を書くと ID 改名で過去の全記録が孤児になるため。**主キーは `game_id` のまま**・子テーブルの FK も貼り替えず、列を 1 本増やすだけに留める（当初案の PK 差し替えは影響範囲が桁違いに大きく、本番稼働 DB への手術を避けた）。採番は INSERT 時のみで、**`responses/` の記録ファイル名・`settings.game_no_seq`・`MAX(game_no)` の 3 情報源の最大値 + 1**（「実際に記録が参照している番号」を主情報源に据えることで、バックアップ復元・DB リセットで DB 側の採番情報が巻き戻っても番号を再利用せず、新ゲームが削除済みゲームの過去記録を引き継ぐ静かな破損を防ぐ）。走査はファイル名だけを見るので 1 ファイルも開かない。**露出方針**: GUI には出さない／ログは `game_no` を実際に使う処理に限り `game_id (no.12)` で併記。あわせて §7.5.3 の JSON スキーマから **`player_count` を削除**（取得法未確定のため常時 `null` を書かず**キーごと省略**、将来キーの有無がデータ世代の判別になる）。 | Kenshiro Kuroga \& Claude |
 | 2026-06-30 | 1.10.65 | **(#386、Manager v0.32.0)** §機能3「画像の差し替え仕様」に WPF 編集画面 (`EditGamePage`) の **予約名前空間 `.toneprism/`** 取り込み規約を追記。外部画像を版フォルダ直下でなく `games/{game_id}/v{version}/.toneprism/{thumbnail\|background}.<ext>` へ役割正規化 + copy-not-move で取り込み、絶対外部パス保存（他 PC で壊れる footgun）を廃止。取り込みは全版走査（版切替で非選択版の外部画像が silent loss しないため）+ 画像取り込みが起きた保存は `assetsChanged`（アセットバックアップ対象）にする。拡張子変更で残る旧役割ファイルは保存成功後に `CleanupStaleRoleFiles` で掃除（取り込み時に消すと abort で旧画像消失＋DB dangling になるため成功後・#417 同根、guide 側は #348）。共有ヘルパー `GameImageAssetHelper` / `GameImageSaveImporter` を抽出（ADD/EDIT 共用想定だが本 PR 配線は EDIT のみ、ADD は #324）。版数・DB スキーマ不変。 | Kenshiro Kuroga \& Claude |
 | 2026-06-13 | 1.10.64 | **(#245 PR5、WPF シェル移行)** §2.4 に開発用ソリューションファイル `TonePrism.slnx`（VS18/net10 SDK 対応の新 XML 形式・Manager/Tests/LauncherAgent 収録・Updater は net48 で未収録）の記述を追加。WinForms→WPF シェル移行（#245 PR5）の一環で、VS が単体 csproj/フォルダ起動時に net10 プロジェクトの NuGet 復元に失敗する問題を回避するため `.slnx` を SoT とし「VS では必ず .slnx を開く」運用を明記。版数表示・配布形態・DB スキーマは不変。 | Kenshiro Kuroga \& Claude |
