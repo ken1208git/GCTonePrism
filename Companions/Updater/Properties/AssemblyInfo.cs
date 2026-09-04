@@ -19,5 +19,5 @@ using System.Runtime.InteropServices;
 // (例: #168 brand rename で 0.1.0 → 0.2.0、Updater logic 自体は無変更だが exe filename + namespace rename
 // で OS layer の breaking change が発生したため)。
 // 変更時はここを bump + CHANGELOG `## Companions` セクション (旧 `## Updater`、#160 で rename) に entry 追加。
-[assembly: AssemblyVersion("0.2.2.0")]
-[assembly: AssemblyFileVersion("0.2.2.0")]
+[assembly: AssemblyVersion("0.2.3.0")]
+[assembly: AssemblyFileVersion("0.2.3.0")]

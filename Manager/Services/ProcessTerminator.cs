@@ -39,6 +39,9 @@ namespace TonePrism.Manager.Services
             // Launcher
             AppendIfRunning(list, LauncherProcessName, "Launcher");
 
+            // 自分以外の Manager (2026-09-04 の本番事故)
+            AppendOtherManagers(list);
+
             // Companions (Updater 以外)
             if (Directory.Exists(PathManager.CompanionsDir))
             {
@@ -52,6 +55,90 @@ namespace TonePrism.Manager.Services
                 }
             }
             return list;
+        }
+
+        /// <summary>
+        /// **自分以外の Manager プロセス**を検出する (2026-09-04 の本番事故)。
+        ///
+        /// 2 個目の Manager を起動すると、単一起動チェックに引っかかって
+        /// 「Manager は 1 つだけ起動できます」の modal が出る。**この modal は OK を押すまで閉じず、
+        /// その間そのプロセスは生きたまま `Manager/` 配下の exe / dll を掴み続ける。**
+        /// 本番ではこの 2 個目が裏に隠れたまま 2 分 42 秒生き残り、Updater の
+        /// `Manager` → `Manager.bak` rename がアクセス拒否になって更新が失敗した。
+        ///
+        /// Updater 側でも同じ install の Manager を全部待つように直したが (ProcessWaiter)、
+        /// **更新を始める前に気付いて閉じてもらう方が早い**ので両方で塞ぐ。
+        ///
+        /// **対象は「自分と同じ exe path から起動している Manager」だけ** (置換されるのは自分の install の
+        /// dir だけなので、別 install の Manager を閉じさせる理由が無い)。
+        ///
+        /// (レビュー Medium-2) **path を読めなかったプロセスは数えない。** 呼び出し側
+        /// (`UpdateSectionPanel.btnUpdateNow_Click`) はリストが空になるまで Retry/Cancel を回すループで、
+        /// 「無視して続行」の出口が無い。つまり false positive は「更新が二度と始められない」に直結する。
+        /// 他 user session の Manager は `MainModule` が access denied で読めないので、読めないものまで
+        /// 数えると**見えないウィンドウを閉じろと言われて詰む**。実際に塞ぎたい #444 のケース
+        /// (同一ユーザー・同一 install の 2 個目) では path は問題なく読めるし、読めなかった場合も
+        /// Updater 側が待機と 120 秒上限 (exit 3) で拾うので、ここは false positive を避ける側に倒す。
+        ///
+        /// 自分の path は `AppContext.BaseDirectory` から組み立てる (`MainModule` 経由だと自分自身の
+        /// 読み取りに失敗したときに全 Manager を数えてしまい、上記の詰みを招く)。
+        /// </summary>
+        private static void AppendOtherManagers(List<RunningProcessInfo> list)
+        {
+            const string managerProcessName = "TonePrism_Manager";
+            int count = 0;
+            try
+            {
+                int selfPid;
+                using (Process self = Process.GetCurrentProcess())
+                {
+                    selfPid = self.Id;
+                }
+                // 自分の exe path。MainModule と違い例外経路が無い。
+                string selfExe = Path.Combine(AppContext.BaseDirectory, managerProcessName + ".exe");
+
+                foreach (Process p in Process.GetProcessesByName(managerProcessName))
+                {
+                    try
+                    {
+                        if (p.Id == selfPid) continue;
+
+                        string path = null;
+                        try { path = p.MainModule != null ? p.MainModule.FileName : null; }
+                        catch { path = null; }
+
+                        // path を確認できたものだけ数える (上の docstring 参照)。
+                        if (path == null) continue;
+                        if (!string.Equals(path, selfExe, StringComparison.OrdinalIgnoreCase)) continue;
+
+                        count++;
+                    }
+                    catch (Exception)
+                    {
+                        // 列挙中に exit した等。数えないだけで続行。
+                    }
+                    finally
+                    {
+                        try { p.Dispose(); } catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[ProcessTerminator] 他の Manager プロセスの列挙に失敗 (チェックを skip): " + ex.Message);
+                return;
+            }
+
+            if (count > 0)
+            {
+                list.Add(new RunningProcessInfo
+                {
+                    ProcessName = managerProcessName,
+                    DisplayLabel = "Manager (この PC で開いている別のウィンドウ。"
+                        + "「1 つだけ起動できます」の小窓が裏に隠れていないか確認してください)",
+                    InstanceCount = count,
+                });
+            }
         }
 
         private static void AppendIfRunning(List<RunningProcessInfo> list, string processName, string displayLabel)

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 
@@ -47,7 +48,7 @@ namespace TonePrism.Updater
     /// Updater は Manager のみを対象にする。
     ///
     /// **wait/kill 対象の決定** (Codex round 2 P1 #1 対応):
-    ///   - `callerPid > 0` (Manager UI から `--caller-pid` 指定) → PID-only wait/kill
+    ///   - `callerPid > 0` (Manager UI から `--caller-pid` 指定) → caller + 同一 install の Manager を wait/kill (#444)
     ///     (`Process.GetProcessById(pid)` で対象を絞る、同 PC の他 install Manager を巻き添えにしない)
     ///   - `callerPid == -1` (未指定) → system-wide fallback (`GetProcessesByName("TonePrism_Manager")`)
     ///     (round 1 L5 で acknowledged、校内 1 PC 1 install 前提なら実害なしの fallback)
@@ -92,12 +93,30 @@ namespace TonePrism.Updater
         internal const int UnidentifiedCapSeconds = 45;
 
         /// <summary>
+        /// (#444) **caller は終了したのに、同一 install の他の Manager が残っている**状態を待つ上限 (秒)。
+        ///
+        /// #444 で「caller だけでなく同一 install の Manager を全部待つ」ようにしたが、Manager は
+        /// 通常経路で `--wait-timeout 0` (無制限) を渡すため、**残った 2 個目が永久に閉じられないと
+        /// Updater が永久に待つ**という新しい詰み方が生まれる。しかもその 2 個目が生きている典型的な
+        /// 理由は「1 つだけ起動できます」の modal を誰も押していないことなので、放っておいても
+        /// 閉じられない可能性が高い。caller (= 更新を始めた Manager) は既に終了していて画面が無いので、
+        /// ユーザーからは「管理ソフトが消えたまま何も起きない」に見える — <see cref="UnidentifiedCapSeconds"/>
+        /// を入れたのとまったく同じ理由で、ここにも上限が要る。
+        ///
+        /// 上限に達したら `TimedOutNoForceKill` (exit 3) を返す。exit 3 の案内は
+        /// 「手動で Manager を閉じてから再試行」で、この状況にそのまま当てはまる。
+        ///
+        /// caller 自身が残っている間はこの上限は効かない (caller は必ず終了するので待ってよい)。
+        /// </summary>
+        private const int OtherManagersCapSeconds = 120;
+
+        /// <summary>
         /// Manager プロセスが全て終了するまで polling で待機する。
         /// </summary>
         /// <param name="timeoutSeconds">timeout 秒数 (0 で無制限)</param>
         /// <param name="forceKill">timeout 経過時に強制 kill するか</param>
-        /// <param name="callerPid">caller Manager の PID (> 0 で PID-only モード、-1 で system-wide fallback、Codex round 2 P1 #1)</param>
-        /// <param name="expectedExePath">PID-only モード時に MainModule.FileName と一致を要求する Manager.exe の絶対 path (round 8 Codex P2-1、同名 exe 別 install / session の PID 再利用検知に使用)</param>
+        /// <param name="callerPid">caller Manager の PID (> 0 で同一 install モード、-1 で system-wide fallback、Codex round 2 P1 #1)</param>
+        /// <param name="expectedExePath">同一 install 判定で MainModule.FileName と一致を要求する Manager.exe の絶対 path (round 8 Codex P2-1、同名 exe 別 install / session の PID 再利用検知に使用)</param>
         /// <returns>失敗種別を区別した <see cref="WaitResult"/> (round 4 H-1、旧 bool 返しから差し替え)。caller (Program.cs) が switch で exit code 0/3/7/8 に分岐する</returns>
         public static WaitResult WaitForManagerExit(int timeoutSeconds, bool forceKill, int callerPid, string expectedExePath)
         {
@@ -106,10 +125,11 @@ namespace TonePrism.Updater
             int forceKillAttempts = 0;
             int consecutiveEnumerationFailures = 0;
             var unidentifiedSince = new Stopwatch();
+            var othersOnlySince = new Stopwatch();
 
             if (callerPid > 0)
             {
-                Logger.Info($"PID-only モード: caller-pid={callerPid} のみを wait/kill 対象にする");
+                Logger.Info($"同一 install モード: caller-pid={callerPid} + 同じ exe path から起動している Manager を wait/kill 対象にする (#444)");
             }
             else
             {
@@ -174,6 +194,26 @@ namespace TonePrism.Updater
                         {
                             Logger.Info($"...待機継続中 ({sw.Elapsed.TotalSeconds:F1}s 経過、{procs.Length} 件残存)");
                         }
+                    }
+
+                    // (#444) caller は終了したのに同一 install の他の Manager が残っている状態の上限。
+                    // 通常経路は `--wait-timeout 0` (無制限) なので、下の timeout 判定では拾えない。
+                    if (!enumerationFailed && callerPid > 0 && procs.Length > 0 && !ContainsPid(procs, callerPid))
+                    {
+                        if (!othersOnlySince.IsRunning) othersOnlySince.Restart();
+                        if (othersOnlySince.Elapsed.TotalSeconds >= OtherManagersCapSeconds)
+                        {
+                            Logger.Error($"更新を始めた Manager は終了しましたが、同じ install の別の Manager が"
+                                + $" {OtherManagersCapSeconds} 秒経っても残っています。"
+                                + " 起動中のまま置換に進むとデータが不整合になるため、Manager dir には触らずに中止します"
+                                + " (「Manager は 1 つだけ起動できます」の小窓が他のウィンドウの裏に隠れていないか"
+                                + " 確認し、すべての管理ソフトを閉じてからもう一度お試しください)");
+                            return WaitResult.TimedOutNoForceKill;
+                        }
+                    }
+                    else
+                    {
+                        othersOnlySince.Reset();
                     }
 
                     // (#440) 「生きているが同一性を確認できない」状態の上限。**timeout 判定より先に見る** —
@@ -267,150 +307,230 @@ namespace TonePrism.Updater
         }
 
         /// <summary>
-        /// wait/kill 対象のプロセス配列を取得。PID-only モード or system-wide fallback。
+        /// 待機対象の Manager プロセスを解決する。
         ///
-        /// PID-only モード (Codex round 2 P1 #1) の 2 段識別検証:
-        ///   1. **ProcessName 検証** (シニアレビュー round 3 H1):
-        ///      Windows は exit 済プロセスの PID を別プロセスに再利用する。Manager (PID=1234) が Updater
-        ///      spawn 直後に exit → OS が 1234 を別プロセス (例: notepad) に割当 → `GetProcessById(1234)`
-        ///      が notepad を返し Manager と誤認 → `--force-kill` 指定時に notepad を kill する silent
-        ///      danger があった。`ProcessName == "TonePrism_Manager"` で「異名 exe による PID 再利用」を排除。
-        ///   2. **MainModule.FileName 検証** (round 8 Codex P2-1):
-        ///      ProcessName だけでは「**同名** exe (= 同 PC 別 install / 別 session の Manager)」による PID
-        ///      再利用を区別できなかった。例: D:\Install_A\Manager\TonePrism_Manager.exe (caller、exit) →
-        ///      OS が PID を E:\Install_B\Manager\TonePrism_Manager.exe (別 install で同時稼働中) に再割当
-        ///      → ProcessName 一致で誤認 → `--force-kill` 指定時に E:\ 側を kill する silent danger。
-        ///      `MainModule.FileName` を `expectedExePath` (Program.cs が `--restart-exe` を渡す) と比較して
-        ///      install path 単位で識別を強化。`expectedExePath` が null/empty なら本検証は skip (後方互換)。
-        ///      **path が不一致**なら別 install / session なので空配列 (既終了扱い)。
-        ///      **読み取り不能** (Win32Exception = access denied / 32-64bit 差) は空配列にしない (#440)。
-        ///      「識別できない」を「終了済み」と読むと、起動中の Manager dir を置換しに行って静かな
-        ///      データ不整合を作る (= #440 の根本原因そのもの)。待機を継続しつつ `unidentified` を立てて
-        ///      caller に伝え、caller が UnidentifiedCapSeconds で打ち切る。**識別できていないので
-        ///      kill 対象には入れない** (別 install を巻き添えにしないため)。
-        ///   ProcessName 不一致 / path 不一致は「Manager 既終了 + PID 再利用」とみなして空配列扱い
-        ///   (= 待機 skip 経路)、force-kill 対象からも外す。
+        /// **`--caller-pid` 指定時でも caller だけを見ない (2026-09-04 の本番事故)。** 同じ install から起動して
+        /// いる Manager が他にもあれば、それも待機対象に含める。実際に本番で
+        /// 「2 個目の Manager が『1 つだけ起動できます』の modal を出したまま生きていて、caller だけを
+        ///  待った Updater が Manager dir の rename でアクセス拒否になる」事故が起きた。
+        ///
+        /// caller PID だけを見る設計 (round 2 P1 #1) は **他 install を巻き添えにしない**ためのもので、
+        /// 「同一 install の別プロセスを無視してよい」という意味ではなかった。exe path 一致で絞れば
+        /// 巻き添えリスクは増えないまま、この穴だけ塞げる。
         /// </summary>
         private static Process[] GetTargetProcesses(int callerPid, string expectedExePath, bool verboseLog, out bool unidentified)
         {
             unidentified = false;
-            if (callerPid > 0)
+            if (callerPid <= 0)
             {
-                // PID-only モード: GetProcessById は対象不在で ArgumentException を投げるので捕捉して空配列扱い
-                Process p;
-                try
-                {
-                    p = Process.GetProcessById(callerPid);
-                }
-                catch (ArgumentException)
-                {
-                    // PID 不在 = プロセス終了済 (= 期待状態)
-                    return new Process[0];
-                }
-
-                // [1] ProcessName 検証 (PID 再利用での異名 exe 誤認防止、round 3 H1)。
-                // `.exe` 拡張子は ProcessName には含まれないので比較値は "TonePrism_Manager"。
-                string actualName;
-                try
-                {
-                    actualName = p.ProcessName;
-                }
-                catch (InvalidOperationException)
-                {
-                    // ProcessName アクセス中にプロセス exit → Manager 終了済と同じ扱い
-                    try { p.Dispose(); } catch { }
-                    return new Process[0];
-                }
-                if (!string.Equals(actualName, ManagerProcessName, StringComparison.OrdinalIgnoreCase))
-                {
-                    Logger.Info($"PID={callerPid} は別プロセス '{actualName}' (PID 再利用と判定)、Manager 既終了扱い");
-                    try { p.Dispose(); } catch { }
-                    return new Process[0];
-                }
-
-                // [2] MainModule.FileName 検証 (round 8 Codex P2-1、同名 exe 別 install / session 識別)。
-                // expectedExePath が指定されている場合のみ実行 (caller が render mode で path 不要な場合の
-                // 後方互換性、現状 Program.cs は常に `--restart-exe` を渡す)。
-                if (!string.IsNullOrEmpty(expectedExePath))
-                {
-                    string actualPath = null;
-                    try
-                    {
-                        // .NET Framework 4.8 で MainModule は 32-64 bit cross-platform / access denied 等で
-                        // 例外を投げうる: Win32Exception (access denied / 32-64 mismatch)、
-                        // InvalidOperationException (process exited)、NotSupportedException (rare)。
-                        actualPath = p.MainModule != null ? p.MainModule.FileName : null;
-                    }
-                    catch (Exception ex) when (ex is System.ComponentModel.Win32Exception
-                                            || ex is NotSupportedException)
-                    {
-                        // **「識別できない」を「終了済み」と読んではいけない** (#440)。
-                        //
-                        // (レビュー 10) `NotSupportedException` も同じ経路に寄せる。上の doc が投げうると
-                        // 列挙しているのに捕まえていなかったため、外側の catch(Exception) に流れて
-                        // 「enumeration の一時障害」として計上され exit 8 (= 短時間後の再試行で回復見込み)
-                        // になっていた。同じ「MainModule が読めない」事象が例外の種類で exit 8 と exit 9 に
-                        // 割れるうえ、exit 8 の案内はこのケースでは誤り (待っても直らない)。
-                        //
-                        // 旧実装はここで空配列を返し、Manager が動いたままでも「既に終了済み」として
-                        // 待機を skip していた。その結果 Manager dir の rename がアクセス拒否で失敗し、
-                        // ロールバックして「内部エラー」になる — しかも Launcher / CHANGELOG は先に
-                        // 置換済みなので、**Manager だけ古いまま「最新版を実行中」と表示される**
-                        // 静かな不整合に落ちる。実際に Bundle v0.9.0 以降ずっとこれが起きていた。
-                        //
-                        // 判定を諦める方向の「安全側」は kill の話であって、待機の話ではない。
-                        // ここまでで [1] ProcessName の一致は確認済みなので、**同名プロセスが生きている
-                        // 以上は待つ**方に倒す。待って空振りしても最悪 timeout で止まるだけだが、
-                        // 待たずに進むと上記の不整合を作る。
-                        //
-                        // kill は `--force-kill` 指定時のみで、Manager (UpdaterClient.Spawn) は常に
-                        // forceKill: false を渡すため、この経路で無関係プロセスを kill することはない。
-                        // (#440) 「識別できない」を「終了済み」と読まない。ただし**無限には待たない** —
-                        // caller が UnidentifiedCapSeconds で打ち切る。out で状態を伝える。
-                        unidentified = true;
-                        if (verboseLog)
-                        {
-                            Logger.Warn($"PID={callerPid} の MainModule を読めませんでした ({ex.Message})。"
-                                + " プロセス名は一致しているため Manager が起動中とみなして待機します"
-                                + " (同一性を確認できていないので kill 対象にはしません)。"
-                                + " Updater が 32bit で動いている場合はこの経路に入ります (#440)");
-                        }
-                        return new[] { p };
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        // アクセス中にプロセス exit → 期待状態
-                        try { p.Dispose(); } catch { }
-                        return new Process[0];
-                    }
-
-                    if (actualPath == null)
-                    {
-                        // (レビュー Medium-2) `MainModule` は例外を投げずに **null を返すこともある**。
-                        // これを下の path 比較に流すと「別 path 'null'」= 別 install と判定され、
-                        // **#440 と同じ「識別できない」を「終了済み」と読む挙動が残る**。
-                        // 例外経路と同じく「同名プロセスが生きている以上は待つ」に倒す。
-                        unidentified = true;
-                        if (verboseLog)
-                        {
-                            Logger.Warn($"PID={callerPid} の MainModule が null でした。"
-                                + " プロセス名は一致しているため Manager が起動中とみなして待機します"
-                                + " (同一性を確認できていないので kill 対象にはしません)");
-                        }
-                        return new[] { p };
-                    }
-
-                    if (!string.Equals(actualPath, expectedExePath, StringComparison.OrdinalIgnoreCase))
-                    {
-                        Logger.Info($"PID={callerPid} は同名 exe だが別 path '{actualPath}' (期待: '{expectedExePath}')、別 install / session と判定、Manager 既終了扱い");
-                        try { p.Dispose(); } catch { }
-                        return new Process[0];
-                    }
-                }
-                return new[] { p };
+                // system-wide fallback
+                return Process.GetProcessesByName(ManagerProcessName);
             }
-            // system-wide fallback
-            return Process.GetProcessesByName(ManagerProcessName);
+
+            var targets = new List<Process>();
+            bool anyUnidentified = false;
+            bool u;
+
+            // [A] caller 自身。GetProcessById は対象不在で ArgumentException (= 終了済 = 期待状態)。
+            Process caller = null;
+            try { caller = Process.GetProcessById(callerPid); }
+            catch (ArgumentException) { /* PID 不在 = 終了済 (期待状態)、caller は null のまま */ }
+            if (caller != null)
+            {
+                // caller は **自分が起動した Manager** なので、path を読めなくても待つ (#440)。
+                if (IsSameInstallManager(caller, callerPid, expectedExePath, verboseLog,
+                        treatUnreadablePathAsMatch: true, unidentified: out u))
+                {
+                    anyUnidentified |= u;
+                    targets.Add(caller);
+                }
+                else
+                {
+                    try { caller.Dispose(); } catch { }
+                }
+            }
+
+            // [B] 同じ install から起動している **caller 以外の** Manager。
+            //
+            // (レビュー Medium-1) **ここでの列挙失敗は握り潰さない。** 通常経路では caller は既に
+            // 終了していて [A] は空なので、握り潰すと targets が空 = 「Manager は既に終了済み」→
+            // WaitResult.Success に落ち、#444 で塞いだ穴が enumeration 失敗時にそのまま復活する。
+            // 例外は呼び出し元へ抜けて consecutiveEnumerationFailures に積まれ、連続 5 回で exit 8
+            // (= 一時障害、短時間後の再試行で回復見込み) になる — caller 側の失敗と同じ扱い。
+            Process[] others = Process.GetProcessesByName(ManagerProcessName);
+            foreach (Process o in others)
+            {
+                int otherPid;
+                try { otherPid = o.Id; }
+                catch (Exception) { try { o.Dispose(); } catch { } continue; }
+
+                if (otherPid == callerPid) { try { o.Dispose(); } catch { } continue; }
+
+                // (レビュー High-2) **caller 以外は path を確認できたものだけ対象にする。**
+                // caller の「識別できないなら待つ」(#440) は *自分の* Manager だから正しいが、
+                // caller 以外では risk profile が逆転する — 他 install / 他 user session の Manager は
+                // MainModule が access denied で読めないため、待つ側に倒すと `unidentified` が立ち、
+                // **無関係なプロセス 1 つで更新が exit 9 で中止される**。「path 一致で絞るので巻き添え
+                // リスクは増えない」という本 PR の主張も、読めない経路では成立していなかった。
+                if (IsSameInstallManager(o, otherPid, expectedExePath, verboseLog,
+                        treatUnreadablePathAsMatch: false, unidentified: out u))
+                {
+                    anyUnidentified |= u;
+                    if (verboseLog)
+                    {
+                        Logger.Warn("PID=" + otherPid + " も同じ install の Manager です (caller=" + callerPid + " 以外)。"
+                            + " これも終了を待ちます — 待たずに進むと Manager dir の rename が"
+                            + " アクセス拒否になります (2026-09-04 の本番事故)");
+                    }
+                    targets.Add(o);
+                }
+                else
+                {
+                    try { o.Dispose(); } catch { }
+                }
+            }
+
+            unidentified = anyUnidentified;
+            return targets.ToArray();
+        }
+
+        /// <summary>
+        /// そのプロセスが「**この install の** Manager」かを判定する。
+        ///
+        /// 2 段の識別検証を行う:
+        ///   1. **ProcessName 検証** (round 3 H1): Windows は exit 済プロセスの PID を再利用する。
+        ///      caller が Updater spawn 直後に exit → OS が同 PID を別プロセス (例: notepad) に割当 →
+        ///      `GetProcessById` がそれを返して Manager と誤認 → `--force-kill` 時に kill する danger。
+        ///      `ProcessName == "TonePrism_Manager"` で「異名 exe による PID 再利用」を排除する。
+        ///   2. **MainModule.FileName 検証** (round 8 Codex P2-1): ProcessName だけでは「**同名** exe
+        ///      (= 同 PC 別 install / 別 session の Manager)」を区別できない。`expectedExePath`
+        ///      (Program.cs が `--restart-exe` を渡す) と比較して install 単位で識別する。
+        ///      `expectedExePath` が null/empty なら本検証は skip (後方互換)。
+        ///
+        /// <paramref name="treatUnreadablePathAsMatch"/> が **path を読めなかったときの倒し方**を決める。
+        ///   - `true` (caller 用): 待機対象に含め、<paramref name="unidentified"/> を立てる。
+        ///     「識別できない」を「終了済み」と読むと起動中の Manager dir を置換しに行って静かな
+        ///     データ不整合を作る (#440 の根本原因そのもの)。無限には待たず caller 側が
+        ///     <see cref="UnidentifiedCapSeconds"/> で打ち切る。
+        ///   - `false` (caller 以外用、レビュー High-2): **対象外にする。** 他 install / 他 user session の
+        ///     Manager は access denied で path を読めないので、待つ側に倒すと無関係なプロセス 1 つで
+        ///     更新が exit 9 で中止される。caller と違って「自分の Manager である保証」が無い以上、
+        ///     読めないものは他人のものとして扱う方が正しい。
+        ///
+        /// 識別できていないプロセスは**いずれの場合も kill 対象には入れない** (別 install の巻き添え防止、
+        /// SPEC §3.7.6.1)。
+        /// </summary>
+        private static bool IsSameInstallManager(Process p, int pid, string expectedExePath, bool verboseLog,
+            bool treatUnreadablePathAsMatch, out bool unidentified)
+        {
+            unidentified = false;
+
+            // [1] ProcessName 検証 (PID 再利用での異名 exe 誤認防止、round 3 H1)。
+            // `.exe` 拡張子は ProcessName には含まれないので比較値は "TonePrism_Manager"。
+            string actualName;
+            try { actualName = p.ProcessName; }
+            catch (InvalidOperationException) { return false; }  // アクセス中に exit = 終了済と同じ扱い
+            if (!string.Equals(actualName, ManagerProcessName, StringComparison.OrdinalIgnoreCase))
+            {
+                if (verboseLog) Logger.Info("PID=" + pid + " は別プロセス '" + actualName + "' (PID 再利用と判定)、対象外");
+                return false;
+            }
+
+            // [2] MainModule.FileName 検証 (round 8 Codex P2-1、同名 exe 別 install / session 識別)。
+            // expectedExePath 未指定時は path 検証なし (caller が渡さない場合の後方互換、
+            // 現状 Program.cs は常に `--restart-exe` を渡す)。
+            if (string.IsNullOrEmpty(expectedExePath)) return true;
+
+            string actualPath;
+            try
+            {
+                // .NET Framework 4.8 で MainModule は 32-64 bit cross-platform / access denied 等で
+                // 例外を投げうる: Win32Exception (access denied / 32-64 mismatch)、
+                // InvalidOperationException (process exited)、NotSupportedException (rare)。
+                actualPath = p.MainModule != null ? p.MainModule.FileName : null;
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception
+                                    || ex is NotSupportedException)
+            {
+                // **「識別できない」を「終了済み」と読んではいけない** (#440)。
+                //
+                // 旧実装はここで空配列を返し、Manager が動いたままでも「既に終了済み」として
+                // 待機を skip していた。その結果 Manager dir の rename がアクセス拒否で失敗し、
+                // ロールバックして「内部エラー」になる — しかも Launcher / CHANGELOG は先に
+                // 置換済みなので、**Manager だけ古いまま「最新版を実行中」と表示される**
+                // 静かな不整合に落ちる。実際に Bundle v0.9.0 以降ずっとこれが起きていた。
+                //
+                // 判定を諦める方向の「安全側」は kill の話であって、待機の話ではない。
+                // ここまでで ProcessName の一致は確認済みなので、**同名プロセスが生きている
+                // 以上は待つ**方に倒す。無限には待たず UnidentifiedCapSeconds で打ち切る。
+                if (!treatUnreadablePathAsMatch)
+                {
+                    // (レビュー High-2) caller 以外。他 install / 他 user session の可能性があり、
+                    // 待つ側に倒すと無関係なプロセスで更新が止まる。対象外にする。
+                    if (verboseLog)
+                    {
+                        Logger.Info("PID=" + pid + " の MainModule を読めませんでした (" + ex.Message + ")。"
+                            + " caller ではないため同一 install と確認できず、待機対象から外します");
+                    }
+                    return false;
+                }
+                unidentified = true;
+                if (verboseLog)
+                {
+                    Logger.Warn("PID=" + pid + " の MainModule を読めませんでした (" + ex.Message + ")。"
+                        + " プロセス名は一致しているため Manager が起動中とみなして待機します"
+                        + " (同一性を確認できていないので kill 対象にはしません)。"
+                        + " Updater が 32bit で動いている場合はこの経路に入ります (#440)");
+                }
+                return true;
+            }
+            catch (InvalidOperationException)
+            {
+                // アクセス中にプロセス exit → 期待状態
+                return false;
+            }
+
+            if (actualPath == null)
+            {
+                // (レビュー Medium-2) `MainModule` は例外を投げずに **null を返すこともある**。
+                // これを path 比較に流すと「別 path 'null'」= 別 install と判定され、
+                // #440 と同じ「識別できない」を「終了済み」と読む挙動が残る。
+                if (!treatUnreadablePathAsMatch)
+                {
+                    if (verboseLog)
+                    {
+                        Logger.Info("PID=" + pid + " の MainModule が null でした。"
+                            + " caller ではないため同一 install と確認できず、待機対象から外します");
+                    }
+                    return false;
+                }
+                unidentified = true;
+                if (verboseLog)
+                {
+                    Logger.Warn("PID=" + pid + " の MainModule が null でした。"
+                        + " プロセス名は一致しているため Manager が起動中とみなして待機します"
+                        + " (同一性を確認できていないので kill 対象にはしません)");
+                }
+                return true;
+            }
+
+            if (!string.Equals(actualPath, expectedExePath, StringComparison.OrdinalIgnoreCase))
+            {
+                if (verboseLog) Logger.Info("PID=" + pid + " は同名 exe だが別 path '" + actualPath + "' (期待: '" + expectedExePath + "')、別 install / session と判定、対象外");
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>指定 PID が配列に含まれるか。`Id` アクセス中の例外は「含まれない」に倒す。</summary>
+        private static bool ContainsPid(Process[] procs, int pid)
+        {
+            foreach (Process p in procs)
+            {
+                try { if (p.Id == pid) return true; }
+                catch (Exception) { /* 列挙中に exit 等。含まれない扱い */ }
+            }
+            return false;
         }
 
         private static void KillAll(Process[] procs)
