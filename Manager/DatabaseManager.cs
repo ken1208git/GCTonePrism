@@ -250,6 +250,8 @@ namespace TonePrism.Manager
         /// </summary>
         public void AddGameAtTop(GameInfo game)
         {
+            // transaction を開く前に走査しておく (SMB 全走査を書き込みロック中に持ち込まない。レビュー H-2)。
+            long recordsMax = SchemaManager.ReadMaxGameNoFromRecords();
             _conn.ExecuteWithRetry(() =>
             {
                 using (var connection = new SQLiteConnection(_conn.ConnectionString))
@@ -269,7 +271,7 @@ namespace TonePrism.Manager
                             }
                             game.DisplayOrder = minOrder - 1;
 
-                            _gameRepo.AddGameRowInTransaction(connection, transaction, game);
+                            _gameRepo.AddGameRowInTransaction(connection, transaction, game, recordsMax);
                             transaction.Commit();
                         }
                         catch
@@ -295,6 +297,8 @@ namespace TonePrism.Manager
         /// </summary>
         public void AddGameAtTopWithInitialVersion(GameInfo game, GameVersion initialVersion)
         {
+            // transaction を開く前に走査しておく (SMB 全走査を書き込みロック中に持ち込まない。レビュー H-2)。
+            long recordsMax = SchemaManager.ReadMaxGameNoFromRecords();
             _conn.ExecuteWithRetry(() =>
             {
                 using (var connection = new SQLiteConnection(_conn.ConnectionString))
@@ -312,7 +316,7 @@ namespace TonePrism.Manager
                             }
                             game.DisplayOrder = minOrder - 1;
 
-                            _gameRepo.AddGameRowInTransaction(connection, transaction, game);
+                            _gameRepo.AddGameRowInTransaction(connection, transaction, game, recordsMax);
                             // 初期版は必ず追加対象 game の id を指す (caller の取り違え防止の二段保険)。
                             initialVersion.GameId = game.GameId;
                             _versionRepo.AddVersionRowInTransaction(connection, transaction, initialVersion);

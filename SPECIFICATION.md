@@ -2315,6 +2315,7 @@ SQLiteデータベースのテーブル設計：
   | key_mapping | TEXT | | キーマッピング設定（JSON形式、NULL可） |
   | arguments | TEXT | | ゲーム実行ファイルへの起動引数（任意） |
   | version | TEXT | | 現行バージョン文字列（`game_versions.version` を参照する代表値、NULL 可） |
+  | game_no | INTEGER | UNIQUE INDEX (`idx_games_game_no`) | **DB v24 (#297 PR2) で追加**。ゲームに一度だけ振られる**不変**の内部番号。プレイ記録・アンケートの JSON（`responses/`）がゲームを指す唯一のキー。`game_id` はスタッフが手入力しフォルダ名も兼ねるため改名しうるが、JSON には DB の FK のような改名追随の仕組みが無く、`game_id` を書くと ID 改名で過去の全記録が孤児になる。採番は `games` への INSERT 時のみで UPDATE 経路は本列を書かない（不変性を構造的に担保）。詳細は §7.5.3「game_no の設計」参照 |
 
 #### テーブル2: developers
 
@@ -2664,10 +2665,37 @@ Install.bat により以下の構造で展開される（dev-time と同じ階�
   - 仮ファイル名（`.tmp`）に書き出す
   - 書き込み完了後に最終ファイル名へリネーム（途中状態を読ませない）
   - 1 度書いたら追記せず read-only に放置
-- **JSON スキーマ**（#297 で確定、実装は PR2/PR3）:
+- **JSON スキーマ**（#297 で確定、PR2 着手時に `game_no` / `player_count` を最終化）:
   - **共通**: `type`（`"play_record"` / `"survey"`）/ `source_pc`（`COMPUTERNAME`）/ `created_at`（UNIX秒）
-  - **play_record**: `game_id` / `start_time`（UNIX秒）/ `end_time`（UNIX秒）/ `player_count`（取得法は PR2 着手時に確定）
-  - **survey**: `game_id`（全体アンケートは `null`）/ `rating`（1〜5）/ `comment`（任意、UI 上限 200 字）/ `trigger`（`"game_end"` / `"launcher_end"`）
+  - **play_record**: `game_no` / `start_time`（UNIX秒）/ `end_time`（UNIX秒）
+  - **survey**: `game_no`（全体アンケートは `null`）/ `rating`（1〜5）/ `comment`（任意、UI 上限 200 字）/ `trigger`（`"game_end"` / `"launcher_end"`）
+  - **`player_count` は出力しない**（PR2 で決定）。取得法が未確定のため、常に `null` を書くのではなく**キーごと省略**する。JSON はスキーマレスなので「後で足すために予約しておく」必要が無く、常に `null` だと読み手が「取ろうとして取れなかった」と誤読する。将来 取得法を実装した時点で初めてキーが現れるため、`"player_count" in record` がそのままデータ世代の判別に使える。
+
+##### game_no の設計（#297 PR2 / DB v24）
+
+JSON がゲームを指すキーは `game_id`（文字列）ではなく `games.game_no`（不変の整数）にする。
+
+- **なぜ**: `game_id` はスタッフが Manager で手入力する文字列で `games/<game_id>/` のフォルダ名も兼ね、**改名できてしまう**。DB 内部の参照は FK が追随するが、**JSON にはその仕組みが無い**ため、`game_id` を書くと ID 改名の瞬間に過去の全記録がどのゲームのものか分からなくなる（手で全 JSON を書き換えるのはキオスクの書込と競合して危険）。
+- **主キーは差し替えない**: `games` の PRIMARY KEY は `game_id` のままで、子テーブル（`game_versions` / `developers` / `store_section_games`）の FK も貼り替えない。JSON を腐らせないために必要なのは「不変の整数キー」だけなので、**列を 1 本増やすだけ**で足りる（テーブル recreate も FK 貼り替えも発生しない）。
+- **採番**: `MigrateV23ToV24` が既存行へ `game_id` 昇順で backfill し（開始値は下記 3 情報源の最大値の次。記録が 1 件も無い通常の移行では 1 から）、以降は `GameRepository.AddGameRowInTransaction` が INSERT 時に払い出す。払い出す値は、**手に入る情報源すべての最大値 + 1** とする（「どれが原本か」を決めない）。
+
+  | 情報源 | ゲーム削除で下がる | DB 復元 / リセットで巻き戻る | 消えうる |
+  | --- | --- | --- | --- |
+  | (a) `responses/` の記録ファイル名から読んだ最大 `game_no` | しない | **しない** | SMB 断・誤削除 |
+  | (b) `settings.game_no_seq`（最後に払い出した番号） | しない | **する** | DB と運命を共にする |
+  | (c) `MAX(games.game_no)` | **する** | する | 同上 |
+
+  - **(a) が主役**。「実際に記録が参照している番号」こそが真値なので、DB の系譜が切れる事故（バックアップ復元・DB リセット）を越えて番号の再利用を防げる。記録のファイル名が `<unix_ts>-<game_no>-<uuid>.json` なので、**ディレクトリ一覧を取るだけで判定でき 1 ファイルも開かない**。
+  - **(b)** は (a) が読めないとき（SMB 断、記録がまだ 1 件も無い開催前、この仕組みを入れた直後でファイルが存在しない初回）を担当する。
+  - **(c)** は上 2 つが両方死んだときの最後の床。最大番号のゲームを削除すると下がるため単独では使えない。
+  - 塞げないのは「(a) が読めない」かつ「DB を古い状態に復元した」の**二重障害**のみ。(a) の走査に失敗したときは警告ログを残して気づけるようにする。**ゲーム追加はブロックしない**（会期中に SMB が一時的に不調というだけでスタッフの作業を止める方が実害が大きい）。
+  - 走査は形式に合わないファイル（書きかけの `.tmp`、番号を持たない旧形式、全体アンケートの `0`）を黙って読み飛ばす。ここは「下限を求める」処理なので、読み飛ばしても過小評価になるだけで (b)(c) が補う。
+  - **番号はゲーム生成時に消費する**（プレイされたかどうかは見ない）。**一度払い出した番号は、そのゲームを削除しても再利用しない**（`settings.game_no_seq` を採番と同時に更新する high-water mark 方式のため）。番号に歯抜けができるが、番号は人が読まない不透明な識別子なので連番である必要はない。
+- **一意性**: `idx_games_game_no` UNIQUE INDEX が採番ロジックのバグを INSERT 時点で例外に変える最後の砦。
+- **露出方針**:
+  - **GUI には出さない**（Manager のゲーム一覧・編集画面、Launcher の来場者向け画面とも）。部員が触るのは今までどおり「ゲームID」（= `game_id`）で、`game_no` は完全に内部専用。編集もさせない。
+  - **Launcher の DebugOverlay / サービスモードの診断表示は例外**（開発者・スタッフ調査用の画面のため出してよい）。
+  - **ログには併記する**。ただし `game_no` を実際に使う処理（JSON 書込・集計）のログに限り、`game_id (no.12)` の形にする。JSON の中身は番号しか持たないため、障害調査でログだけから記録とゲームを突き合わせられるようにするのが目的。無関係な処理（フォルダ操作・DB 編集・画像取り込み等）のログに機械的に付けるとノイズになるため付けない。
 - **retention**: 古い日付フォルダの削除で単純に行える（Manager の取り込み・`imported/` 掃除運用は不要になった）。
 
 #### 7.5.4 開発・運用補助ツール（`tools/` フォルダ）
@@ -3203,6 +3231,7 @@ Install.bat により以下の構造で展開される（dev-time と同じ階�
 
 | 日付 | バージョン | 変更内容 | 変更者 |
 | --- | --- | --- | --- |
+| 2026-09-03 | 1.10.66 | **(#297 PR2、DB v24)** §7.3 `games` に **`game_no`**（不変の内部番号・UNIQUE INDEX `idx_games_game_no`）を追加し、§7.5.3 に「game_no の設計」節を新設。プレイ記録・アンケートの JSON がゲームを指すキーを `game_id`（手入力・フォルダ名兼用・**改名可**）から `game_no` へ変更する。JSON には DB の FK のような改名追随の仕組みが無く、`game_id` を書くと ID 改名で過去の全記録が孤児になるため。**主キーは `game_id` のまま**・子テーブルの FK も貼り替えず、列を 1 本増やすだけに留める（当初案の PK 差し替えは影響範囲が桁違いに大きく、本番稼働 DB への手術を避けた）。採番は INSERT 時のみで、**`responses/` の記録ファイル名・`settings.game_no_seq`・`MAX(game_no)` の 3 情報源の最大値 + 1**（「実際に記録が参照している番号」を主情報源に据えることで、バックアップ復元・DB リセットで DB 側の採番情報が巻き戻っても番号を再利用せず、新ゲームが削除済みゲームの過去記録を引き継ぐ静かな破損を防ぐ）。走査はファイル名だけを見るので 1 ファイルも開かない。**露出方針**: GUI には出さない／ログは `game_no` を実際に使う処理に限り `game_id (no.12)` で併記。あわせて §7.5.3 の JSON スキーマから **`player_count` を削除**（取得法未確定のため常時 `null` を書かず**キーごと省略**、将来キーの有無がデータ世代の判別になる）。 | Kenshiro Kuroga \& Claude |
 | 2026-06-30 | 1.10.65 | **(#386、Manager v0.32.0)** §機能3「画像の差し替え仕様」に WPF 編集画面 (`EditGamePage`) の **予約名前空間 `.toneprism/`** 取り込み規約を追記。外部画像を版フォルダ直下でなく `games/{game_id}/v{version}/.toneprism/{thumbnail\|background}.<ext>` へ役割正規化 + copy-not-move で取り込み、絶対外部パス保存（他 PC で壊れる footgun）を廃止。取り込みは全版走査（版切替で非選択版の外部画像が silent loss しないため）+ 画像取り込みが起きた保存は `assetsChanged`（アセットバックアップ対象）にする。拡張子変更で残る旧役割ファイルは保存成功後に `CleanupStaleRoleFiles` で掃除（取り込み時に消すと abort で旧画像消失＋DB dangling になるため成功後・#417 同根、guide 側は #348）。共有ヘルパー `GameImageAssetHelper` / `GameImageSaveImporter` を抽出（ADD/EDIT 共用想定だが本 PR 配線は EDIT のみ、ADD は #324）。版数・DB スキーマ不変。 | Kenshiro Kuroga \& Claude |
 | 2026-06-13 | 1.10.64 | **(#245 PR5、WPF シェル移行)** §2.4 に開発用ソリューションファイル `TonePrism.slnx`（VS18/net10 SDK 対応の新 XML 形式・Manager/Tests/LauncherAgent 収録・Updater は net48 で未収録）の記述を追加。WinForms→WPF シェル移行（#245 PR5）の一環で、VS が単体 csproj/フォルダ起動時に net10 プロジェクトの NuGet 復元に失敗する問題を回避するため `.slnx` を SoT とし「VS では必ず .slnx を開く」運用を明記。版数表示・配布形態・DB スキーマは不変。 | Kenshiro Kuroga \& Claude |
 | 2026-06-12 | 1.10.63 | **(#258 PR4.x、LauncherAgent v0.3.0)** §2.4 Companions の LauncherAgent runtime を「現状 net48・net10 化は PR4.x 予定」→ **net10 へ移行済**に更新。LauncherAgent を net48 msbuild → **net10 + self-contained single-file**（`dotnet publish -r win-x64 --self-contained -p:PublishSingleFile=true`）に移行し配布形態を Manager と揃える。依存ゼロ・純 Win32 P/Invoke + UDP socket のため `net10.0`（非 -windows ＝ WindowsDesktop ランタイム不要、~73MB）。Release.ps1 `Build-LauncherAgent` を dotnet publish 化 + expected-files から `.exe.config` 撤去（`ValidateStagingLegacy` は元々 LauncherAgent 非掲載＝§3.7.8 方針で touch 不要）+ `.NOTES`/ビルド手順コメントを「LauncherAgent=net10 dotnet publish、Updater=net48 msbuild（番人）」に更新。`SYSLIB0014`（速度テストの HttpWebRequest・#287）は NoWarn 抑止（HttpClient 化は将来別 issue）。**（レビュー）exe 版数公開前ゲート `Assert-PublishedLauncherAgentVersion` + single-file 不変条件ガード `Assert-LauncherAgentSingleFile` を追加**し、§3.7.8 のゲート判定軸を「表示 ∧ stamp」→「**stamp パイプラインの有無**（表示有無を問わず defense-in-depth）」に修正（誤版数を焼いた exe の zip 同梱は表示と無関係に起きるため。当初「版数タブ未掲載＝対象外」を撤回）。`AppendTargetFrameworkToOutputPath=false` のコメントを dev 起動 fallback（`launcher_agent.gd _EXE_CANDIDATES`）の load-bearing と明記。 | Kenshiro Kuroga \& Claude |

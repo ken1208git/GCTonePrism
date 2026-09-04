@@ -20,9 +20,12 @@ var db_path: String = ""
 #  v21/v22 は intro_slides テーブル新設と duration_sec 削除 (#253)。Launcher は本テーブルを
 #  IntroSlideRepository (手動ナビの初回説明) で読むため、ここで明示的に対応版数を v22 へ追従させる /
 #  v23 は play_records/surveys/launcher_surveys を DROP (#297、JSON 直読みへピボット)。Launcher の
-#  store_section_repository は popular/recently_played を play_records 非参照化済 (PR1) なので定数追従のみ
-#  → v15〜v23 は定数追従
-const CURRENT_DB_VERSION: int = 23
+#  store_section_repository は popular/recently_played を play_records 非参照化済 (PR1) なので定数追従のみ /
+#  v24 は games.game_no 追加 (#297 PR2)。プレイ記録・アンケート JSON がゲームを指す不変キーで、Launcher は
+#  GameRepository (SELECT *) 経由で読み PlayRecordWriter が JSON に書く (アンケート側の writer は #35 で追加予定)。読み取り列が増える
+#  ので定数追従だけでなく実利用あり。v24 未満の DB では game_no が無く -1 になり、書き出しは skip される
+#  → v15〜v23 は定数追従、v24 は実利用
+const CURRENT_DB_VERSION: int = 24
 
 ## データベースを開く
 func open() -> bool:

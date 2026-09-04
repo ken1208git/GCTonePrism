@@ -5,7 +5,16 @@ extends RefCounted
 class_name GameInfo
 
 ## ゲームID（一意の識別子）
+## スタッフが Manager で手入力する文字列。games/<game_id>/ のフォルダ名も兼ねる。改名しうる。
 var game_id: String = ""
+
+## (#297 PR2 / DB v24) ゲームに一度だけ振られる不変の内部番号。
+## プレイ記録・アンケートの JSON はこの番号でゲームを指す（game_id は改名できてしまい、
+## JSON には DB の FK のような改名追随の仕組みが無いため）。
+## 来場者向け UI には出さない。ログに出すのは番号を実際に使う処理だけで、その場合も
+## `game_id (no.12)` の形で人間が引き当てられるよう併記する。
+## -1 = 未採番 / v24 前の DB（この場合プレイ記録は書き出さない）。
+var game_no: int = -1
 
 ## ゲームタイトル
 var title: String = ""

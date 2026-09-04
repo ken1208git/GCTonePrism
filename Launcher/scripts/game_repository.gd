@@ -129,6 +129,8 @@ func _create_game_info_from_row_dict(row: Dictionary) -> GameInfo:
 	game.play_time = _db_manager.safe_int(row.get("play_time"), -1)
 	game.display_order = _db_manager.safe_int(row.get("display_order"), -1)
 	game.supported_connection = _db_manager.safe_int(row.get("supported_connection"), 0)
+	# (#297 PR2) SELECT * なので v24 以降の DB では自動的に含まれる。v24 未満 / 未採番は -1 のまま。
+	game.game_no = _db_manager.safe_int(row.get("game_no"), -1)
 
 	game.controller_support = _db_manager.safe_bool(row.get("controller_support"), false)
 	game.is_visible = _db_manager.safe_bool(row.get("is_visible"), true)

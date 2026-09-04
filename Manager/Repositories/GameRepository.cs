@@ -36,7 +36,7 @@ namespace TonePrism.Manager.Repositories
                             game_id, title, description, release_year, genre,
                             min_players, max_players, difficulty, play_time, controller_support, supported_connection,
                             thumbnail_path, background_path, executable_path,
-                            display_order, is_visible, controls, key_mapping, arguments,
+                            display_order, is_visible, controls, key_mapping, arguments, game_no,
                             COALESCE(version, (SELECT version FROM game_versions WHERE game_versions.game_id = games.game_id ORDER BY id DESC LIMIT 1)) AS display_version
                         FROM games
                         ORDER BY display_order ASC, title ASC";
@@ -72,7 +72,7 @@ namespace TonePrism.Manager.Repositories
                             game_id, title, description, release_year, genre,
                             min_players, max_players, difficulty, play_time, controller_support, supported_connection,
                             thumbnail_path, background_path, executable_path,
-                            display_order, is_visible, controls, key_mapping, arguments, version
+                            display_order, is_visible, controls, key_mapping, arguments, version, game_no
                         FROM games
                         WHERE game_id = @gameId";
 
@@ -113,6 +113,8 @@ namespace TonePrism.Manager.Repositories
 
         public void Add(GameInfo game)
         {
+            // transaction を開く前に走査しておく (SMB 全走査を書き込みロック中に持ち込まない)。
+            long recordsMax = SchemaManager.ReadMaxGameNoFromRecords();
             _conn.ExecuteWithRetry(() =>
             {
                 using (var connection = new SQLiteConnection(_conn.ConnectionString))
@@ -123,7 +125,7 @@ namespace TonePrism.Manager.Repositories
                     {
                         try
                         {
-                            AddGameRowInTransaction(connection, transaction, game);
+                            AddGameRowInTransaction(connection, transaction, game, recordsMax);
                             transaction.Commit();
                         }
                         catch (Exception)
@@ -141,25 +143,38 @@ namespace TonePrism.Manager.Repositories
         /// `DatabaseManager.AddGameAtTop` で「MIN(display_order) を SERIALIZABLE 内で読んで -1 した値を採用」+
         /// games INSERT を 1 transaction にまとめる目的で抽出。並行 Manager race で DisplayOrder が衝突する経路を
         /// 構造的に閉鎖する。
+        ///
+        /// (#297 PR2) <b>副作用</b>: 採番した <see cref="GameInfo.GameNo"/> を引数の <paramref name="game"/> へ
+        /// 書き戻す (呼び出し側が採番結果をログ等に使えるようにするため)。<c>ExecuteWithRetry</c> のリトライで
+        /// transaction が rollback された場合、破棄された番号が一時的に残るが、次の試行で必ず上書きされるため
+        /// 呼び出し側から観測できる値は常に commit された番号になる。
         /// </summary>
-        internal void AddGameRowInTransaction(SQLiteConnection connection, SQLiteTransaction transaction, GameInfo game)
+        internal void AddGameRowInTransaction(SQLiteConnection connection, SQLiteTransaction transaction, GameInfo game, long recordsMax)
         {
             string insertGame = @"
                 INSERT INTO games (
                     game_id, title, description, release_year, genre,
                     min_players, max_players, difficulty, play_time, controller_support, supported_connection,
                     thumbnail_path, background_path, executable_path,
-                    display_order, is_visible, controls, key_mapping, arguments, version
+                    display_order, is_visible, controls, key_mapping, arguments, version, game_no
                 ) VALUES (
                     @gameId, @title, @description, @releaseYear, @genre,
                     @minPlayers, @maxPlayers, @difficulty, @playTime, @controllerSupport, @supportedConnection,
                     @thumbnailPath, @backgroundPath, @executablePath,
-                    @displayOrder, @isVisible, @controls, @keyMapping, @arguments, @version
+                    @displayOrder, @isVisible, @controls, @keyMapping, @arguments, @version, @gameNo
                 )";
+
+            // (#297 PR2) game_no はここでだけ払い出す。UPDATE 経路は game_no を一切書かないため、一度振った番号は
+            // ゲーム ID を改名しても版を差し替えても変わらない = プレイ記録・アンケート JSON の参照先が壊れない。
+            // 採番は呼び出し側の transaction 内で行い、games の INSERT と同時に commit / rollback される。
+            // ただし `responses/` の走査だけは transaction の外 (= recordsMax) で済ませてある — SMB 上の
+            // 全走査を書き込みロック中に行うと他のキオスクを巻き添えで待たせるため (レビュー H-2)。
+            game.GameNo = SchemaManager.AllocateNextGameNo(connection, transaction, recordsMax);
 
             using (var command = new SQLiteCommand(insertGame, connection, transaction))
             {
                 SetGameParameters(command, game);
+                command.Parameters.AddWithValue("@gameNo", game.GameNo.Value);
                 command.ExecuteNonQuery();
             }
 
@@ -417,6 +432,10 @@ namespace TonePrism.Manager.Repositories
 
             // GetAll / GetById の SELECT は両方 arguments を含むため直接読む。
             game.Arguments = reader["arguments"] is DBNull ? null : reader["arguments"].ToString();
+
+            // (#297 PR2) game_no も両 SELECT に含まれる。v24 migration 前の DB / 未採番行では NULL になりうるため
+            // nullable のまま扱う (呼び出し側でログ用途などに使う。UPDATE 経路は game_no を書かない = 不変)。
+            game.GameNo = reader["game_no"] is DBNull ? (long?)null : Convert.ToInt64(reader["game_no"]);
 
             return game;
         }
