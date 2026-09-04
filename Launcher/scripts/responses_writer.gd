@@ -111,7 +111,7 @@ static func _write_record(category: String, record_type: String, game_no: int, f
 				% [key, category])
 	payload.merge(fields, false)
 
-	var dir_path := base_dir.path_join(RESPONSES_DIRNAME).path_join(category).path_join(_date_folder(created_at))
+	var dir_path := base_dir.path_join(RESPONSES_DIRNAME).path_join(category).path_join(date_folder(created_at))
 	if not DirAccess.dir_exists_absolute(dir_path):
 		var mk_err := DirAccess.make_dir_recursive_absolute(dir_path)
 		if mk_err != OK:
@@ -176,10 +176,14 @@ static func get_pc_name() -> String:
 
 ## UNIX 秒から `YYYY-MM-DD` の日付フォルダ名を作る (**ローカル時刻**基準)。
 ##
+## public なのは、サービスモードの「記録の動作確認」が同じ導出を必要とするため。同じロジックを
+## 各所に書くと、タイムゾーン補正の有無がズレて「フォルダは今日なのに集計は昨日を見ている」の
+## ような追いにくい食い違いを生むので、導出はここ 1 箇所に集約する。
+##
 ## `Time.get_datetime_dict_from_unix_time` は UTC を返すので、システムのタイムゾーン bias を足してから
 ## 変換する。UTC のままだと日本時間の朝 9 時より前が前日フォルダに落ち、「会期 1 日目のフォルダ」が
 ## 直感と 1 日ズレる (スタッフが手でフォルダを覗く運用があるため実害がある)。
-static func _date_folder(unix_ts: int) -> String:
+static func date_folder(unix_ts: int) -> String:
 	var tz := Time.get_time_zone_from_system()
 	var bias_minutes := int(tz.get("bias", 0))
 	var d := Time.get_datetime_dict_from_unix_time(unix_ts + bias_minutes * 60)

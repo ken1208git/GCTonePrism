@@ -31,15 +31,16 @@ const ITEMS := [
 	{"id": "screen_test",  "label": "3. 画面表示テスト"},
 	{"id": "games_test",   "label": "4. ゲーム動作テスト"},
 	{"id": "network",      "label": "5. ネットワーク接続テスト"},
-	{"id": "db_check",     "label": "6. データベース整合性チェック"},
-	{"id": "log_view",     "label": "7. 簡易ログ確認"},
-	{"id": "system_info",  "label": "8. システム情報"},
-	{"id": "debug_overlay","label": "9. デバッグオーバーレイ切替"},
-	{"id": "fullscreen",   "label": "10. フルスクリーン切替"},
-	{"id": "monitor",      "label": "11. ランチャー表示モニタ選択"},
-	{"id": "reload",       "label": "12. ランチャーの再読み込み"},
-	{"id": "restart",      "label": "13. ランチャーの再起動"},
-	{"id": "exit",         "label": "14. ランチャー終了"},
+	{"id": "records_check","label": "6. 記録・アンケートの動作確認"},
+	{"id": "db_check",     "label": "7. データベース整合性チェック"},
+	{"id": "log_view",     "label": "8. 簡易ログ確認"},
+	{"id": "system_info",  "label": "9. システム情報"},
+	{"id": "debug_overlay","label": "10. デバッグオーバーレイ切替"},
+	{"id": "fullscreen",   "label": "11. フルスクリーン切替"},
+	{"id": "monitor",      "label": "12. ランチャー表示モニタ選択"},
+	{"id": "reload",       "label": "13. ランチャーの再読み込み"},
+	{"id": "restart",      "label": "14. ランチャーの再起動"},
+	{"id": "exit",         "label": "15. ランチャー終了"},
 ]
 
 # 画面表示テストで順番に表示するパターン。先頭から 1 つずつ全画面表示し、キー送りで次へ進む。
@@ -54,6 +55,14 @@ const SCREEN_SEQ := [
 	{"mode": "solid",    "color": Color.BLUE,             "label": "青"},
 	{"mode": "solid",    "color": Color(0.5, 0.5, 0.5),   "label": "グレー50%"},
 ]
+
+## (#297) 記録に必要な最小 DB 版数 = `games.game_no` が入った v24。
+##
+## 判定は **「以上」** で行う。これは「現在の版数」ではなく **「game_no が導入された版数」** なので、
+## `DatabaseManager.CURRENT_DB_VERSION` が将来 25, 26… と上がっても**この値は追随させない**
+## (列は残り続けるため、v25 の DB でも記録は問題なく取れる)。CURRENT_DB_VERSION と同一視して
+## しまうと、Manager が先行更新しただけの正常な環境で「記録できません」と誤報する。
+const MIN_DB_VERSION_FOR_RECORDS: int = 24
 
 # ネットワーク接続テストの段階 (上から順に確認。最初に × が出た所が原因)。
 const NW_STAGES := [
@@ -642,6 +651,7 @@ func _build_detail(id: String) -> void:
 		"network": _build_network()
 		"system_info": _build_system_info()
 		"games_test": _build_games_test()
+		"records_check": _build_records_check()
 		"db_check": _build_db_check()
 		"log_view": _build_log_view()
 		"audio": _build_audio_check()
@@ -1337,7 +1347,9 @@ func _set_games_test_desc(mode: String) -> void:
 		"auto":
 			_games_test_desc.text = "各ゲームを自動で起動し、ウィンドウが出るところまで確認してから自動で終了します。起動できるか(OK/NG)だけを一覧で判定。DLL 不足や起動直後のクラッシュなど『そもそも立ち上がらない』問題の検出向けです。"
 		"play":
-			_games_test_desc.text = "選んだゲームを実際に起動して遊んで確認します。終了は原則、遊んでいる最中に HOMEキー / Guideボタンで本番と同じ中断メニューを出して「試遊を終了する」を選びます（試遊中は「続ける／試遊を終了する」の 2 択）。ゲームごとに『正しく遊べたか』『中断メニューが動いたか』の 2 つを 〇× で記録して次へ進みます。『実際にちゃんと遊べるか』＋『中断メニューが効くか』を見る最終確認向けです。"
+			_games_test_desc.text = "選んだゲームを実際に起動して遊んで確認します。終了は原則、遊んでいる最中に HOMEキー / Guideボタンで本番と同じ中断メニューを出して「試遊を終了する」を選びます（試遊中は「続ける／試遊を終了する」の 2 択）。ゲームごとに『正しく遊べたか』『中断メニューが動いたか』の 2 つを 〇× で記録して次へ進みます。『実際にちゃんと遊べるか』＋『中断メニューが効くか』を見る最終確認向けです。
+
+※ 試遊のプレイは記録に残りません（人気ランキングを汚さないため意図的に除外しています）。記録が取れる状態かは「6. 記録・アンケートの動作確認」で確かめてください。"
 
 
 ## モード①: 各ゲームの実行ファイル(exe)が存在するか (= パス切れ/ファイル欠落がないか) を起動せずチェック。
@@ -1659,6 +1671,10 @@ func _build_games_playtest() -> void:
 
 	_add_text("チェックしたゲームを 1 本ずつ起動して試遊します。終了は原則、遊んでいる最中に HOMEキー / Guideボタンで本番と同じ中断メニューを出し、「試遊を終了する」を選んでください（中断メニューの動作確認を兼ねるため）。", C_TEXT)
 	_add_text("ゲームが終了するたびに「正しく遊べたか」「中断メニューが動いたか」の 2 つを 〇× で記録して、自動で次のゲームに進みます（結果は「遊 / 中断」の順に表示）。中断メニューが出ない・操作できないときは、ゲーム自体の終了操作で閉じて中断に × を付けてください。", C_TEXT)
+	# (#311/#297) 試遊は test_session により**プレイ記録から意図的に除外**される。ここに書かないと
+	# 「試遊できた＝記録も取れている」と誤解したまま開場してしまい、当日ぶんの記録が丸ごと失われる。
+	# 取り返しがつかないデータなので、実行画面にも明示して確認先へ誘導する。
+	_add_text("※ 試遊のプレイは記録に残りません（人気ランキングを汚さないため意図的に除外）。記録が取れる状態かは「6. 記録・アンケートの動作確認」で確かめてください。", C_MUTED)
 	_add_button("すべてチェック", func(): _pt_set_all(true))
 	_add_button("すべて外す", func(): _pt_set_all(false))
 	_pt_start_btn = _add_button("チェックしたゲームを試遊", _pt_start)
@@ -1927,6 +1943,301 @@ func _build_log_view() -> void:
 	if list.item_count > 0:
 		list.select(list.item_count - 1)
 		list.ensure_current_is_visible()
+
+
+## (#297 / #34 / #35) 記録・アンケートの動作確認。
+##
+## **なぜ専用画面が要るか**: 「4. ゲーム動作テスト」の試遊は `GameSession.test_session` が立つため、
+## プレイ記録から**意図的に除外**される (#311、試遊で本番ランキングを汚さないため)。つまり
+## **スタッフが試遊しても記録は 1 件も出ない**ので、「試して確かめる」が原理的に使えない。
+## 記録は文化祭当日にしか取れず取り直しも効かないので、開場前に「今日ちゃんと記録できる状態か」を
+## 確認する出口がどうしても必要になる。
+##
+## **偽のレコードは書かない**。書き込み可否は `.probe` ファイルを作って即削除する形で確かめる。
+## 本物のアンケート/プレイ記録を混ぜると集計が汚れるため。
+func _build_records_check() -> void:
+	_add_text("記録が取れる状態かを確認します（試遊テストでは確認できません）", C_MUTED)
+	_add_text("")
+
+	# --- 1) DB が game_no を持つか ---
+	# game_no はプレイ記録・アンケート JSON がゲームを指す唯一のキー。これが無い DB では
+	# 書き出し側が「参照先を解決できない孤児レコード」を避けるために記録を skip する = 全滅する。
+	var dbm := DatabaseManager.new()
+	var db_ok := dbm.open()
+	if not db_ok:
+		_add_text("✗ データベースに接続できません → 記録は 1 件も保存されません", C_DANGER)
+		_add_text("　 対処: Manager が起動しているか、共有フォルダに繋がっているか確認してください", C_MUTED)
+	else:
+		# 版数取得も戻り値を見る。失敗すると ver = 0 に落ちて「データベースが古く記録できません (v0)」
+		# という**誤った原因**をスタッフに見せることになり、「Manager を起動して更新」しても直らない
+		# 切り分け不能状態に送り込む。判定の正確さと同じくらい原因表示の正確さが要る画面なので分ける。
+		var ver := -1
+		if dbm.db.query("PRAGMA user_version"):
+			var vres := dbm.db.get_query_result()
+			if vres and vres.size() > 0:
+				ver = int(vres[0].get("user_version", 0))
+		if ver < 0:
+			_add_text("? データベースの版数を確認できませんでした（読み取りに失敗）", C_MUTED)
+			_add_text("　 対処: 共有フォルダへの接続を確認し、再確認してください", C_MUTED)
+		elif ver >= MIN_DB_VERSION_FOR_RECORDS:
+			_add_text("✓ データベースが記録に対応しています (v%d)" % ver, C_OK)
+		else:
+			_add_text("✗ データベースが古く記録できません (v%d / 必要 v%d 以上)" % [ver, MIN_DB_VERSION_FOR_RECORDS], C_DANGER)
+			_add_text("　 対処: Manager を起動して更新してください", C_MUTED)
+
+		# 未採番のゲームがあると、そのゲームだけ記録が出ない (静かに欠ける) ので個別に出す。
+		# 必要版数未満では game_no 列自体が無くクエリが失敗するため、版数 NG のときは走らせない
+		# (走らせると「0 件 = 問題なし」と読めてしまい、列が無いのに ✓ を出す嘘になる)。
+		if ver >= MIN_DB_VERSION_FOR_RECORDS:
+			# query() の戻り値を必ず見る。失敗を 0 件と同一視すると、上記と同じ嘘の ✓ を生む。
+			if not dbm.db.query("SELECT COUNT(*) AS c FROM games WHERE game_no IS NULL OR game_no <= 0"):
+				_add_text("? ゲームの番号を確認できませんでした（読み取りに失敗）", C_MUTED)
+			else:
+				var ures := dbm.db.get_query_result()
+				var unnumbered := -1
+				if ures and ures.size() > 0:
+					unnumbered = int(ures[0].get("c", 0))
+				if unnumbered < 0:
+					_add_text("? ゲームの番号を確認できませんでした（結果を読めません）", C_MUTED)
+				elif unnumbered > 0:
+					_add_text("✗ 記録できないゲームが %d 本あります（番号が未割り当て）" % unnumbered, C_DANGER)
+					_add_text("　 対処: Manager を起動すると自動で割り当てられます", C_MUTED)
+				else:
+					_add_text("✓ 全ゲームに番号が割り当てられています", C_OK)
+				# **未採番が 0 件でも「番号の再利用」は別問題** (レビュー M-4)。
+				# SPEC §7.5.3 が唯一の残存リスクとして名指ししているのが「記録は残っているのに
+				# DB を古い状態へ復元した」ケースで、そのとき採番は既に記録が参照している番号を
+				# 踏みうる (= 新しいゲームが削除済みゲームの過去記録を横取りする / JSON は番号しか
+				# 持たないので誰も気づけない)。未採番チェックだけ見て ✓ を出すと、この画面が
+				# 一番避けたい「嘘の ✓」になる。ファイル名から読むだけなので中身は開かない。
+				_add_number_reuse_check(dbm)
+
+	# --- 2) アンケートのトグル状態 ---
+	# 「アンケートが 1 件も出ない」の原因が『壊れている』のか『設定で OFF』なのかを現場で切り分ける。
+	# ピーク時に OFF にして戻し忘れる、が一番ありそうな事故なので目立たせる。
+	if db_ok:
+		var repo := SettingsRepository.new(dbm)
+		var ge := repo.get_bool(SurveyFlow.SETTING_GAME_END_ENABLED, SurveyFlow.DEFAULT_ENABLED)
+		var le := repo.get_bool(SurveyFlow.SETTING_LAUNCHER_END_ENABLED, SurveyFlow.DEFAULT_ENABLED)
+		_add_text("")
+		_add_text("ゲーム終了時のアンケート: %s" % ("表示する" if ge else "表示しない ← Manager の設定で OFF"),
+			C_OK if ge else C_MUTED)
+		_add_text("退出時のアンケート: %s" % ("表示する" if le else "表示しない ← Manager の設定で OFF"),
+			C_OK if le else C_MUTED)
+		dbm.close()
+
+	# --- 3) 実際に書き込めるか (.probe を作って消す) ---
+	_add_text("")
+	var base_dir := PathManager.get_base_directory()
+	if base_dir.is_empty():
+		_add_text("✗ インストール先を特定できません → 記録の保存先が決まりません", C_DANGER)
+	else:
+		var probe_dir := base_dir.path_join(ResponsesWriter.RESPONSES_DIRNAME).path_join(ResponsesWriter.CATEGORY_PLAY_RECORDS)
+		var err := OK
+		if not DirAccess.dir_exists_absolute(probe_dir):
+			err = DirAccess.make_dir_recursive_absolute(probe_dir)
+		if err != OK:
+			_add_text("✗ 記録用フォルダを作れません（書き込み権限なし / 共有が切れている）", C_DANGER)
+			_add_text("　 %s" % probe_dir, C_MUTED)
+		else:
+			# 本物の書き込みと**同じ手順**を通す (作る → 書く → 成否確認 → rename)。
+			# rename を省くと、「作成は許可されているが rename は不可」な共有設定や、ウイルス対策が
+			# .tmp を掴んでいる環境で probe だけ ✓ になり、本物の記録は全滅する — 診断画面が一番
+			# 防ぎたい事態を見逃す。rename 先は .done にして **.json は一度も作らない**
+			# (作ると件数カウントと採番走査に混ざりうる)。
+			var probe_tmp := probe_dir.path_join(".write_probe.tmp")
+			var probe_done := probe_dir.path_join(".write_probe.done")
+			var f := FileAccess.open(probe_tmp, FileAccess.WRITE)
+			if f == null:
+				_add_text("✗ 記録用フォルダに書き込めません → 記録は 1 件も保存されません", C_DANGER)
+				_add_text("　 対処: 共有フォルダの接続と書き込み権限を確認してください", C_MUTED)
+			else:
+				f.store_string("probe")
+				var werr := f.get_error()
+				f.close()
+				if werr != OK:
+					DirAccess.remove_absolute(probe_tmp)
+					_add_text("✗ 書き込みに失敗しました（ディスク空き容量 / 共有の切断）", C_DANGER)
+				else:
+					var rerr := DirAccess.rename_absolute(probe_tmp, probe_done)
+					if rerr != OK:
+						DirAccess.remove_absolute(probe_tmp)
+						_add_text("✗ ファイルの確定（名前の変更）に失敗しました → 記録は 1 件も保存されません", C_DANGER)
+						_add_text("　 対処: 共有フォルダの権限設定と、ウイルス対策ソフトの除外設定を確認してください", C_MUTED)
+					else:
+						# 後始末の戻り値も見る。残骸自体は無害 (件数カウントも採番走査も .json しか
+						# 見ない) だが、**消せない = 権限か AV が掴んでいる**という診断上の信号を
+						# 捨てることになる。この画面は「戻り値を必ず見る」を自分の規約にしている。
+						var derr := DirAccess.remove_absolute(probe_done)
+						if derr != OK:
+							_add_text("✓ 記録用フォルダに書き込めます（ただし確認用ファイルを消せませんでした）", C_OK)
+							_add_text("　 残骸: %s" % probe_done, C_MUTED)
+							_add_text("　 記録自体は保存できますが、権限かウイルス対策ソフトの影響が疑われます", C_MUTED)
+						else:
+							_add_text("✓ 記録用フォルダに書き込めます", C_OK)
+			_add_text("　 保存先: %s" % probe_dir, C_MUTED)
+
+	# --- 4) 実際に溜まっている件数 (ファイル名を数えるだけ = 1 ファイルも開かない) ---
+	_add_text("")
+	_add_text("これまでに保存された記録:", C_TEXT)
+	_add_counts_for(ResponsesWriter.CATEGORY_PLAY_RECORDS, "プレイ記録")
+	_add_counts_for(ResponsesWriter.CATEGORY_SURVEYS, "アンケート")
+
+	# --- 5) 書き込みの失敗 ---
+	# **判定の根拠は ResponsesWriter のカウンタで、ログではない。** ログの保持は 400 行の
+	# リングバッファなので、来場者が回った日の夕方には朝の失敗が押し出されて消える。それを根拠に
+	# 「エラーはありません」と出すと、この画面が一番やってはいけない「嘘の ✓」になる
+	# (同じ画面で v23 DB の query 失敗を 0 件と読んでいた silent pass と同種)。カウンタは溢れない。
+	_add_text("")
+	var fails: int = ResponsesWriter.write_fail_count
+	if fails == 0:
+		_add_text("✓ 今回の起動以降、記録の書き込みに失敗はありません (成功 %d 件)"
+			% ResponsesWriter.write_ok_count, C_OK)
+	else:
+		_add_text("✗ 今回の起動以降、記録の書き込みに %d 件失敗しています (成功 %d 件)"
+			% [fails, ResponsesWriter.write_ok_count], C_DANGER)
+		_add_text("　 最後の失敗: %s" % ResponsesWriter.last_write_error, C_MUTED)
+		_add_text("　 → 上の「記録用フォルダに書き込めます」も確認してください。共有が切れている / 空き容量が無い可能性があります。", C_MUTED)
+	# ログ由来の行は補助表示。カウンタが 0 でもここに何か出ることがある (書き込み以外の警告)。
+	var errors := _recent_record_warnings()
+	if not errors.is_empty():
+		_add_text("　 参考 (直近のログ、古い行は流れます):", C_MUTED)
+		for line in errors:
+			_add_text("　 %s" % line, C_MUTED)
+
+	_add_text("")
+	_add_button("再確認", func(): _build_detail("records_check"); _refocus_detail())
+
+
+## 番号の再利用が起きうる状態かを、`settings.game_no_seq` と実際の記録の突き合わせで見る。
+##
+## 検出したいのは「DB だけ過去に巻き戻った」状態。復元やリセットで seq が下がっても、
+## `responses/` の記録は消えないので **記録が参照している番号 > seq** という食い違いが残る。
+## これを見れば、次にゲームを追加したときに番号を踏むことを**開場前に**知れる。
+## (Manager 側も走査失敗時に警告を出すが、それは Manager のログにしか出ず、スタッフが朝見るのは
+##  この画面なので、ここでも判定する。)
+func _add_number_reuse_check(dbm) -> void:
+	var seq := -1
+	if dbm.db.query("SELECT value FROM settings WHERE key = 'game_no_seq'"):
+		# 型を明示する: get_query_result() は無型なので `:=` では推論できない (Parse Error)。
+		var r: Array = dbm.db.get_query_result()
+		if r and r.size() > 0:
+			seq = int(str(r[0].get("value", "0")))
+	var max_in_db := -1
+	if dbm.db.query("SELECT COALESCE(MAX(game_no), 0) AS m FROM games"):
+		var r2: Array = dbm.db.get_query_result()
+		if r2 and r2.size() > 0:
+			max_in_db = int(r2[0].get("m", 0))
+	if seq < 0 or max_in_db < 0:
+		_add_text("? 番号の採番状態を確認できませんでした（読み取りに失敗）", C_MUTED)
+		return
+
+	var max_in_records := _max_game_no_in_records()
+	if max_in_records > seq:
+		_add_text("✗ 記録が使っている番号 (no.%d) が、次の採番位置 (no.%d) より進んでいます" % [max_in_records, seq], C_DANGER)
+		_add_text("　 バックアップから古いデータベースを復元した可能性があります。このまま", C_MUTED)
+		_add_text("　 ゲームを追加すると、過去の記録と結び付きが入れ替わります", C_MUTED)
+		_add_text("　 対処: 開発者に連絡してください（記録は消えていません）", C_MUTED)
+	elif seq < max_in_db:
+		_add_text("✗ 採番位置 (no.%d) が、実際に使われている最大番号 (no.%d) より小さいです" % [seq, max_in_db], C_DANGER)
+		_add_text("　 対処: 開発者に連絡してください", C_MUTED)
+	else:
+		_add_text("✓ 番号の重複は起きません（次の採番: no.%d）" % (seq + 1), C_OK)
+
+
+## `responses/` の記録ファイル名から、参照されている最大の game_no を読む。
+## **ファイル名だけ**を見る (`<unix_ts>-<game_no>-<uuid>.json`) ので 1 ファイルも開かない。
+## 旧形式や `.tmp` は分割数が合わないので自然に 0 として無視される。
+func _max_game_no_in_records() -> int:
+	var base_dir := PathManager.get_base_directory()
+	if base_dir.is_empty():
+		return 0
+	var max_no := 0
+	for category in [ResponsesWriter.CATEGORY_PLAY_RECORDS, ResponsesWriter.CATEGORY_SURVEYS]:
+		var dir := base_dir.path_join(ResponsesWriter.RESPONSES_DIRNAME).path_join(category)
+		if not DirAccess.dir_exists_absolute(dir):
+			continue
+		for d in DirAccess.get_directories_at(dir):
+			for fn in DirAccess.get_files_at(dir.path_join(d)):
+				if not fn.ends_with(".json"):
+					continue
+				var parts := fn.split("-")
+				if parts.size() < 3:
+					continue
+				var no := int(parts[1])
+				if no > max_no:
+					max_no = no
+	return max_no
+
+
+## 指定 category の日付フォルダごとの件数を、新しい日付から順に出す。
+## ファイル名を数えるだけで中身は開かない (ファイル名が `<unix_ts>-<game_no>-<uuid>.json` なので
+## 件数も時刻も名前から分かる。本番は SMB なので「開く回数 = ネットワーク往復」= ここが効く)。
+func _add_counts_for(category: String, label: String) -> void:
+	var base_dir := PathManager.get_base_directory()
+	if base_dir.is_empty():
+		return
+	var dir := base_dir.path_join(ResponsesWriter.RESPONSES_DIRNAME).path_join(category)
+	if not DirAccess.dir_exists_absolute(dir):
+		_add_text("　 %s: まだ 1 件もありません" % label, C_MUTED)
+		return
+
+	var days := DirAccess.get_directories_at(dir)
+	days.sort()
+	days.reverse()  # 新しい日付が先頭 (名前が YYYY-MM-DD なので辞書順 = 時系列)
+	if days.is_empty():
+		_add_text("　 %s: まだ 1 件もありません" % label, C_MUTED)
+		return
+
+	var today := ResponsesWriter.date_folder(int(Time.get_unix_time_from_system()))
+	var shown := 0
+	for d in days:
+		if shown >= 3:
+			break
+		var count := 0
+		var newest_ts := 0
+		for fn in DirAccess.get_files_at(dir.path_join(d)):
+			if not fn.ends_with(".json"):
+				continue
+			count += 1
+			var ts := int(fn.split("-")[0])
+			if ts > newest_ts:
+				newest_ts = ts
+		var suffix := ""
+		if newest_ts > 0:
+			var dt := Time.get_datetime_dict_from_unix_time(newest_ts + int(Time.get_time_zone_from_system().get("bias", 0)) * 60)
+			suffix = "（最後 %02d:%02d）" % [int(dt.get("hour", 0)), int(dt.get("minute", 0))]
+		var is_today := (d == today)
+		_add_text("　 %s %s: %d 件 %s%s" % [label, d, count, suffix, "  ← 今日" if is_today else ""],
+			C_OK if is_today and count > 0 else C_TEXT)
+		shown += 1
+
+	if not days.has(today):
+		_add_text("　 %s: 今日はまだ 0 件です" % label, C_MUTED)
+
+
+## 直近ログから記録の書き込みに関する警告だけを拾う (最大 5 件、新しい順)。
+## 記録に関する WARN / ERROR を新しい順に最大 5 件返す。**あくまで補助表示**。
+##
+## Logger が持っているのは 400 行のメモリ上リングバッファなので、(a) 前回の起動で出たエラーは
+## 見えず、(b) **同じ起動の中でも古い行は押し出されて消える**。したがって「0 件だからエラーが
+## 無かった」とは言えない。成否の判定は `ResponsesWriter` のカウンタで行い、ここは
+## 「何が起きたか」の手掛かりを添えるためだけに使うこと (レビュー Medium-2)。
+func _recent_record_warnings() -> Array[String]:
+	var out: Array[String] = []
+	var logger = get_node_or_null("/root/Logger")
+	if logger == null or not logger.has_method("get_recent_logs"):
+		return out
+	var lines: Array = logger.get_recent_logs()
+	for i in range(lines.size() - 1, -1, -1):
+		var line := str(lines[i])
+		if not (line.contains("WARN") or line.contains("ERROR")):
+			continue
+		if line.contains("ResponsesWriter") or line.contains("PlayRecordWriter") or line.contains("SurveyWriter"):
+			out.append(line.strip_edges())
+			if out.size() >= 5:
+				break
+	return out
 
 
 func _build_db_check() -> void:
