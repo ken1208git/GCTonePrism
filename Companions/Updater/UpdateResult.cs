@@ -77,7 +77,7 @@ namespace TonePrism.Updater
         /// 消費側はこれと実行中の Manager を比べ、追いついていれば失敗記録を失効させる。
         /// 読めなければ null (失効判定なし = 次の更新で上書きされるまで残る)。
         /// </summary>
-        private static string ReadStagingManagerVersion(string stagingDir)
+        internal static string ReadStagingManagerVersion(string stagingDir)
         {
             try
             {

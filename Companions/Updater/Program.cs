@@ -235,6 +235,51 @@ namespace TonePrism.Updater
                 return 6;
             }
 
+            // (#440) **置換が本当に効いたかを、置換した本人がここで確かめる。**
+            //
+            // 直前の check は「起動対象 exe が存在するか」だけで、**中身が古いままでも通る**。
+            // 「持ち込んだ版数」は期待でしかなく、それだけを根拠にしても成功したかは分からない。
+            // 実際に本体フォルダに入っている版数を読んで、持ち込んだものと一致するかを見る。
+            // これが本当の意味での成否判定で、置換直後のここが一番確実に見られる場所。
+            //
+            // 両方読めたときだけ判定する。片方でも読めない場合は「検証できなかった」であって
+            // 「失敗した」ではないので、警告に留めて続行する (正常な更新を巻き戻さない)。
+            string stagedVer = UpdateResult.ReadStagingManagerVersion(args.StagingDir);
+            string installedVer = null;
+            try
+            {
+                installedVer = FileVersionInfo.GetVersionInfo(args.RestartExe).FileVersion;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"置換後の Manager 版数を読めませんでした (検証 skip): {ex.GetType().Name}: {ex.Message}");
+            }
+            if (!string.IsNullOrEmpty(stagedVer) && !string.IsNullOrEmpty(installedVer))
+            {
+                if (!string.Equals(stagedVer, installedVer, StringComparison.OrdinalIgnoreCase))
+                {
+                    Logger.Error($"置換後の Manager が持ち込んだものと違います (本体 v{installedVer} / 持ち込み v{stagedVer})。"
+                        + " ファイルが実際には置き換わっていません");
+                    Logger.Warn("旧 Manager を .bak から復元します...");
+                    try
+                    {
+                        FileReplacer.RollbackFromBak(args.ManagerTargetDir);
+                    }
+                    catch (InvalidOperationException rbEx)
+                    {
+                        Logger.Error("FATAL: 版数検証失敗後の rollback も失敗", rbEx);
+                        return 5;
+                    }
+                    Logger.Warn("旧 Manager 復元完了。もう一度アップデートを実行してください。");
+                    return 6;
+                }
+                Logger.Info($"置換後の Manager 版数を確認: v{installedVer} (持ち込みと一致)");
+            }
+            else
+            {
+                Logger.Warn("Manager 版数を検証できませんでした (staging か本体の版数が読めない)。置換自体は成功として続行します");
+            }
+
             // round 6 Codex P1 + Medium-5 対応: `.bak` 削除は **新 Manager.exe の起動成功確認後** に
             // 移動 (旧実装は restart-exe 存在 check 後 / Process.Start 前で削除していたため、
             // Process.Start null/throw or spawn 直後 early-crash の各 path で「旧 Manager 消失 +
