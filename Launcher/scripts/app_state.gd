@@ -29,6 +29,19 @@ var returning_from_game: bool = false
 ## true なら running-view 再現も「ゲーム終了中…」で出して連続させる (false=自然終了は「プレイ中」)。
 var returning_from_quit: bool = false
 
+## (#344) この来場者に中断メニューの案内を出したか。ゲームを 1 本目に起動する直前だけ出す。
+##
+## **リセットは `screensaver.gd::_ready()` が行う** (`clear()` ではない)。スクリーンセーバーに
+## 着いた = 来場者が入れ替わった、が経路を問わず成立するため。`clear()` に紐づけてはいけない —
+## `IdleManager.transition_to_screensaver` の呼び出し 13 箇所のうち `clear()` を通るのは 2 箇所だけで、
+## **「遊び終えて退出」「放置して帰る」という最も多い 2 つの帰り方が通らない**。そこに紐づけると
+## 次の来場者に案内が出ず、しかも「前の人の帰り方次第で出たり出なかったり」する = 当日その場で
+## 再現できない壊れ方になる (issue #344 のコメントに調査結果あり)。
+##
+## `clear()` でも畳んでいるのは、明示的な退出で状態を残さないという `clear()` の趣旨に沿うため
+## (こちらは補助で、正本は screensaver 側)。
+var pause_hint_shown: bool = false
+
 ## (#315) 空ストア時の「最上位カルーセル」用に AppState を準備する。StoreEntryRouter (入口直行) と
 ## store_browse._fallback_to_carousel (すり抜け defense) の両方から呼び、最上位カルーセルの作り方を
 ## 1 箇所に集約する (戻り先ストア無し・全ゲーム表示・top-level フラグ)。
@@ -48,3 +61,4 @@ func clear() -> void:
 	carousel_top_level = false
 	returning_from_game = false
 	returning_from_quit = false
+	pause_hint_shown = false
