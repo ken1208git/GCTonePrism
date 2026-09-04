@@ -1371,6 +1371,82 @@ Release.ps1 と一致 (caller CI は `%ERRORLEVEL%` で 4 通り区別):
 - **Startup context** title: `【危険】別の Manager / Launcher が稼働中です` (#251、旧「他 PC で Manager が起動中」→ PR3b「他 PC で Manager / Launcher が稼働中」→ #251 で「他 PC」前提撤回)。body の主旨: 「別の Manager や Launcher が動いたままこの Manager を使うと、保存中のデータや バックアップが競合して、データが破損したり消えたりする恐れがあります」+ 検出 PC list (pc_name + 最終確認 N 秒前、最大 5 件 + 残件数要約)。
 - **EditOperation context** title: `【危険】別の Manager / Launcher が稼働中です` (#251、旧「他 PC で誰かが作業中です」→ 同一 PC Launcher 検出で噛み合わない case を解消し Startup と統一)。body の主旨: 「**このまま {operationDescription} を実行すると、別の Manager / Launcher と競合して、データが破損したり保存内容が消えたりする恐れがあります**」(round 2 Medium-1 で「保存すると {op} の内容と...」から汎用文「{op} を実行すると...」に変更、operation 種別が削除 / 初期化 / 並び替え 等で grammatical に成立しなかった drift を解消)。
 
+#### 3.8.2.1 モーダル owner 規約 (#449)
+
+**モーダルの owner に渡してよいのは、次の 2 条件をともに満たす窓だけ。MainForm を無条件に `this` で渡してはならない。**
+
+1. **タスクバーから辿れること** — 物理的に表示済みで、自身または owner 連鎖の先がタスクバーに出ている
+2. **ユーザーが視認できること** — `Opacity > 0`
+
+条件 1 は step 1 で機械的に検査する（`ShowInTaskbar`、または owner 連鎖の根 `GA_ROOTOWNER` が**タスクバーに出ている**か = 可視かつ `WS_EX_TOOLWINDOW` でない）。**「根が可視か」では不十分** — 可視だがタスクバーに出ない窓を根に持つモーダルは #449 と同じく戻せず、これは本規約の中心命題（決定的なのはタスクバー在否であって可視性ではない）を検査側で取り違えることになる。`ShowInTaskbar=false` の Form は既に 3 つ存在する（`UnsavedSettingsDialog` / `RestoreReportForm` / `ImageNameConflictDialog`）ので「将来の話」ではない。条件 2（`Opacity > 0`）は step 1 / 2 / 3 すべてに適用する。
+
+条件 1 だけでは足りない（レビュー指摘）。`Opacity = 0` の窓はタスクバーボタンを持ちうるが、ユーザーには「押しても何も見えない」ので、モーダルの所在を伝える窓としては機能しない。実装 `VisibleModalOwnerOrNull` の `Opacity > 0` はこの条件 2 に対応する。
+
+##### 機序
+
+所有ダイアログが自前のタスクバーボタンを持たないのは **owned であること自体**が理由で、owner の透明度とは無関係。**決定的なのは owner 自身がタスクバーに出ているか** — タスクバーは `GetLastActivePopup` 経由で所有モーダルを前面化するので、owner がタスクバーに居れば戻せる。逆に「まだ表示されていない窓」「`Hide()` 済みの窓」を owner にすると、戻す導線が消える。
+
+Manager の MainForm は WPF シェル移行 (#245) 後、ctor で `Opacity = 0` にされ、`ShowShellAsMain` で `Hide()` される裏方窓になった。**危険はプロセス全期間に及ぶ**（起動中は「まだ表示されていない」、起動後は「Hide 済み」）。
+
+> **未決着 (#449)**: 「`ShowShellAsMain` の `Hide()` が `MainForm_Load` の境界を越えて維持されるか」は結論が出ていない。レビュー側は複製アプリ 6 構成（.NET FW 4.8 / net10、`Opacity` 有無、WPF 込みの構造複製）すべてで**post-Load に再表示される**（`Visible=True` / `IsWindowVisible=True`）と実測し、こちら側の計測（PowerShell ハーネス）は逆の結果だった。複製では決着しないため、`ShowShellAsMain` に診断ログを仕込んで**実機で確定させる**（判定は `OnShown` の発火有無。**確定後に診断を削除するところまでが #458**）。判定は **`(#449 診断) Load 境界の 3 秒後:` の 1 行**（`-> Hide は 維持された/維持されなかった` まで出る）。`Hide()` 直後の行は補助情報。
+
+> 当初は `OnShown` の発火有無で判定していたが、`Form.Shown` は**最初の表示 1 回だけ**発火するため、`Hide()` より前に物理表示する 3 経路（起動時競合ゲート / シェル生成失敗のフォールバック / DB 未初期化）で消費され、以後二度と発火しない。すると「行が無い」が **「Hide が維持された」と「プローブが消費された」の両方から生じ**、判定不能を判定済みと誤読する silent pass になっていた。Timer は UI スレッドのメッセージループで `MainForm_Load` から戻った後に必ず 1 回発火するので、**否定側の結論も必ずログに出る**。再表示されるなら MainForm はタスクバーに残るので、上記「起動後は Hide 済み」と、それを根拠にした深刻度の説明を訂正すること。
+>
+> なお**どちらに転んでも本規約と実装は成立する** — 上記の条件 2 (`Opacity > 0`) により、透明のまま再表示されていても MainForm は owner に選ばれない。
+
+2026-09-04 の実害 (#449) は `MainForm_Load` が return する前 = **MainForm が一度も表示されていない状態**の窓を owner にしたことによる。起動スプラッシュ (#246) は `Topmost="False"` なので原因ではない。
+
+> **注意**: 「透明だから危ない」という理解は誤り。この誤解のまま規約化すると、将来「可視だが `ShowInTaskbar=false` の窓」を owner にして同じ穴が開く（スプラッシュがまさにそれ）。
+
+##### `null` は「owner なし」ではない
+
+WinForms の `MessageBox.Show` / `Form.ShowDialog` は **owner が `null` のとき呼び出しスレッドの `GetActiveWindow()` を owner に代入する**。したがって `null` を渡しても不可視の MainForm が owner に戻りうる。
+
+**`null` は「これ以上できることが無い」という意味であって、到達可能性の保証ではない。** 到達可能性が要る場面では、`null` に頼らず**可視 owner を作ってから**渡すこと。
+
+##### 実装
+
+- `MainForm.VisibleModalOwnerOrNull()`: **4 段**で返す。
+  1. **今アクティブな可視 Form (`Form.ActiveForm`、自分自身は除く。`Modal == true` 必須)** — これを最優先にするのは、Win32 の MessageBox が**破棄時に owner を `EnableWindow(true)` する**ため。ゲーム追加 / 編集フォームは `ShowDialog(ShellOwner.For(shell))` で開かれシェルを無効化しているので、内側から出すモーダルの owner をシェルにすると、**閉じた瞬間にシェルが再有効化され、編集フォームが開いたままシェルを操作できてしまう**（別種の再入）。内側のモーダルを owner にすれば入れ子が壊れない。なおこの Form は可視シェルに owned なので、タスクバーのシェルのボタンから `GetLastActivePopup` で辿れる = 規約を満たす（**owned でない可視 Form が active な場合はこの根拠が崩れるので、その時は `ShowInTaskbar` か owner 連鎖の確認を足すこと**）
+     - **自分で閉じる窓は除外する**（現状 `ProcessingDialog`）。Win32 は owner 破棄時に所有窓を道連れにするため、worker 完了で自分自身を閉じるモーダルを owner にすると確認ダイアログが勝手に消え、`MessageBox.Show` が Yes 以外を返す。`MainForm_FormClosing` のバックアップ中止確認がこれに当たると `e.Cancel = true` で終了がキャンセルされ、シェルは既に閉じているので**窓が 1 つも無い Manager プロセスが生き残る**（#444 と同じ更新阻害状態）
+     - **除外に当たった場合はシェルへ落とさず `null` を返す**。除外対象のモーダルは `ShowDialog(owner = シェル)` されうるので、その時点でシェルは `EnableWindow(false)`。無効化されている窓を owner にすると、破棄時の `EnableWindow(true)` で step 1 が防ごうとした再入が別経路で開く
+     - **⚠️ ただしこの除外は現状「シェルを避ける」効果しか無い (#461、未解決)。** `null` は「owner なし」ではなく `GetActiveWindow()` であり、この状況で active なのはまさに除外対象のモーダルなので、**除外したはずの窓が owner に戻る**。道連れ破棄の失敗シナリオは残っている。owner の選び方では解けないので、「自己クローズするモーダルの上に、その完了で消えては困る確認を出さない」側で解く必要がある
+     - 除外は現在**型判定**なので、将来別の自己クローズ型モーダルが増えると無言で同じ穴が開く。「呼び出し側が閉じるまで生存する窓か」を表す明示フラグへ寄せるのが望ましい（#457）
+  2. **可視シェル** (`ShellWindow.Instance` かつ `IsVisible`)
+  3. **物理的に表示されている MainForm** (`IsWindowVisible(Handle) && Opacity > 0`) — **`Control.Visible` は使わない**（下記）
+  4. 該当なしなら `null`
+  - **`IsVisible` を必ず見る**: `ShellWindow.Instance` は ctor で代入され `Closed` でしか消えないため、`Show()` が HWND 生成後に失敗すると「表示されていないシェル」の HWND が残る。生成側 (`ShowShellAsMain` の catch) でも `Instance = null` を代入して二重に閉じる
+- `MainForm.MakeMainFormVisible()`: スプラッシュを閉じ `Opacity = 1` + `Show()`。**ゲート dialog のように「必ず前面に戻せる」ことが要る場面**で owner を用意するために使う
+- **同時起動の競合 dialog (Startup) は「シェルを先に出す」解決が取れない** — 残りの初期化を止めるゲートであり、シェルはまだ存在せず、出せばゲートの意味が消える。かつ本経路は MainForm の Show 完了後に走る (`BeginInvoke` defer) ため `null` は `GetActiveWindow()` = 不可視 MainForm に倒れうる。**`MakeMainFormVisible()` で可視化してから出す**（OK なら後続の `ShowShellAsMain` が Hide してシェルに移るので可視化は一時的）
+- `FallbackToVisibleMainForm` は可視化してから `VisibleModalOwnerOrNull()` を渡す（規約の適用例。`this` 直渡しだと、可視化自体が失敗したときにクラッシュ通知が到達不能モーダルになる）
+- **MainForm 撤去時の注意**: 本規約自体は MainForm 非依存なのでそのまま生きる（むしろシェルが起動当初から存在するので常に可視 owner が取れる）。ただし `FallbackToVisibleMainForm` は退避先が MainForm 自身なので代替が必要。詳細は #245
+
+> **本規約は暫定 (#460)**。「呼ぶ側が正しい owner を渡すことを覚えている」という前提に立っており、#449 の原因（`MessageBox.Show(this, …)` は #245 以前は正しく、MainForm の裏方化で 262 箇所すべての前提が一斉に崩れたのに誰も気づけなかった）を構造的には防げない。**呼び出し口を `AppDialog` に集約し、`MessageBox.Show` の直接使用をアナライザで禁止する**のが本命の解で、そこまで行けば本節は「`AppDialog` の内部仕様」に縮む。
+
+##### 判定に `Control.Visible` を使わない
+
+WinForms は**最初の物理表示より前 (= `Form_Load` 実行中) でも `Visible == true` を返す**。実測:
+
+```
+in Load     : Visible=True  IsWindowVisible=False   ← Visible が嘘をつく
+after Show(): Visible=True  IsWindowVisible=True    ← 無条件 Show() なら表示される
+```
+
+したがって `Visible` を可視の根拠にすると「一度も表示されていない窓」を owner に選んでしまう。判定は Win32 の `IsWindowVisible` で行い、`MakeMainFormVisible` も `if (!Visible)` でガードしない（ガードすると Load 中は `Show()` が skip されて表示されない）。
+
+##### 未解決（実機確認の対象）
+
+以下は owner を渡していない（= 実効 `null`）。`MainForm_Load` が return する前で MainForm がまだ active window になっていない時点で出るため、実測では `GetActiveWindow()` が 0 に倒れて top-level 窓になる。**ただしこれは保証ではない。**
+
+- `TryShowUpdateCompletedDialog`（✓ 完了 / ✗ 未完了 / 確認できません）
+- **DB 初期化プロンプト ×2（最頻経路。要 F-4 実測）** — 本番導入形態が「まっさら新規インストール」なので、**全ユーザーの初回起動で必ず通る**。低頻度経路（設定の DB リセット / 起動時競合）を直して最頻経路を未解決に置くのは blast radius の順序として逆転している。実測で潜るなら `MakeMainFormVisible()` をこの 2 プロンプトの前にも呼ぶだけで同じパターンを適用できる（追加設計は不要）。**リリース前に必ず実測すること**
+- `Program.cs` の起動エラー ×2
+- **同 PC 重複起動の modal**（`Program.cs`「Manager は 1 つだけ起動できます」）— `Application.Run` より前で**窓が 1 つも存在しない**ため `GetActiveWindow()` は必ず 0 に倒れ、top-level = 到達可能。**未解決ではなく「安全と確認済み」**（#444 でこの modal がプロセスを 2 分 42 秒生かして更新を阻害した実績があるが、それは到達可能性とは別の問題で #447）
+- **ログ保存先の移行通知 (#201)** — `this` 直渡しはやめたが、呼び出しがシェル生成前なので `VisibleModalOwnerOrNull()` は `null` を返す
+- **起動時のアップデート通知で「はい」を押してもシェルが遷移しない (#456)** — 実装が `Opacity = 0` / `Hide()` 済み MainForm のタブ切替のままで、#245 の置き去り経路。**本件は #449 とは無関係に #245 以降ずっと壊れている**（旧順序でも MainForm はユーザーに見える形で表示されないため、cache の温冷に関わらず「はい」の効果は見えなかった）。唯一動くのはシェル生成失敗のフォールバック経路（MainForm が可視でタブがある）
+- **設定パネル由来のダイアログ（DB リセットの確認 / 進捗 / フォルダ削除失敗）** — #449 で `MainForm.VisibleModalOwnerOrNull()` 経由に変更済み。設定は #362 で WPF ネイティブ化されたため本パネルだけシェルにホストされず、`Hide()` 済み MainForm の子のまま残っていた（破壊的な DB 全削除の確認中にシェルを操作できる擬似モーダル + 長い処理中に見失うと戻せない、の両方を踏んでいた）
+- **バックアップ中止の終了確認** — シェルの `Closed` ハンドラが先に `Instance = null` を実行してから MainForm の `Close()` に入るため、`VisibleModalOwnerOrNull()` の step 2 は落ちる。step 1 (`Form.ActiveForm`) が拾える可能性はあるが、シェルが閉じた後なので保証はない
+
 #### 3.8.3 同 PC 重複起動 block (Named Mutex)
 
 - **目的**: LAN table の `pc_name` PRIMARY KEY は同 PC 1 row のみ許容するため、同 PC 重複起動は table 経由検出できない (= `INSERT OR REPLACE` で前者の row が silent 上書きされ、2 process が同 row を交互に取り合う)。Named Mutex で物理 prevention に倒し、責務を分離する。
@@ -3286,6 +3362,7 @@ JSON がゲームを指すキーは `game_id`（文字列）ではなく `games.
 
 | 日付 | バージョン | 変更内容 | 変更者 |
 | --- | --- | --- | --- |
+| 2026-09-04 | 1.10.73 | **(#449、Manager v0.34.3)** §3.8.2.1「モーダル owner 規約」を新設 — **起動シーケンス中のモーダルに渡す owner は「可視の窓」か `null` のどちらかに限る**。WPF シェル移行後の MainForm は `Opacity = 0` の裏方窓で、不可視の窓を owner にすると所有ダイアログがタスクバー / Alt+Tab から消え、z-order で潜ると前面に戻せなくなる（2026-09-04 の仮想本番で 8 分間停止、Win32 API で外から閉じるまで復帰せず）。**レビュー M-6 / H-2 を受けて機序を訂正**: 所有ダイアログにタスクバーボタンが無いのは owned であること自体が理由で、**決定的なのは owner がタスクバーに出ているか**（透明度ではない。この誤解のままだと将来「可視だが `ShowInTaskbar=false`」の窓で同じ穴が開く）。また **`null` は「owner なし」ではない** — WinForms は `GetActiveWindow()` を代入するため保証にならず、到達可能性が要る場面は `MakeMainFormVisible()` で可視 owner を作ってから渡す。スコープも「起動経路」から **MainForm を owner にする全経路**へ拡張（起動後も Hide 済みで同じ危険）。スプラッシュは `Topmost="False"` で原因ではないこと、MainForm 撤去時は `FallbackToVisibleMainForm` の代替が要ることも明記。 | Kenshiro Kuroga \& Claude |
 | 2026-09-04 | 1.10.72 | **(#444、Updater v0.2.3 / Manager v0.34.2)** §3.7.4 の `--caller-pid` に、**`--caller-pid` 指定モードでも同一 install（`--restart-exe` と同じ exe path）の Manager プロセスをすべて待つ**規約を追記。PID 限定は他 install の巻き添え防止が目的で、同一 install の別プロセスを無視してよいという意味ではなかった。2026-09-04 の本番事故（2 つ目の Manager が単一起動 modal を出したまま 2 分 42 秒生存し、`Manager` → `Manager.bak` rename がアクセス拒否 → v0.11.1 の適用失敗）を受けての明文化。Manager 側の更新前プロセスチェックにも自分以外の Manager を含める。 | Kenshiro Kuroga \& Claude |
 | 2026-09-04 | 1.10.71 | **(#440、Updater v0.2.2 / Manager v0.34.1)** §3.7.3 の sentinel schema に `newManagerVersion`（旧 sentinel では欠落しうる = null 可、検証 skip で後方互換）を追加し、消費者の記述に**完了検証**を追記。sentinel は Updater の spawn 成功後に書かれるだけで、spawn した Updater が**その後で**失敗するケースを捕まえず、置換に失敗した古い Manager が「✓ アップデート完了」を出す silent path があった（v0.9.0 以降 2 リリース分、更新失敗がこれで隠れていた）。判定は「版数の不一致」と「Updater の終了コード」の **OR**（版数一致は成功を意味しない）、失敗は **`<install>/.update_result`** に残す（終了コードのログは直近 2 分しか遡れないため）。判定の 3 つ目の条件として「版数入りの申し送りがあるのに結果が無い」（= Updater が痕跡を残さず終わった）も見る。あわせて **§3.7.6.1「Updater のビルド制約」を新設** — `Prefer32Bit=false` 必須、判定は `GetPEKind`、「識別できない」を「終了済み」と読まない、ただし無限に待たず独立した上限で中止、同一性未確認のプロセスは kill 対象に入れない。**`.update_result` の寿命も明文化** — 版数では失効させず（版数が変わらない Bundle リリースで失敗記録が即消えて再試行導線が行き止まりになるため）、消えるのは「成功確認」「次の試行の上書き」「`Install.bat` の掃除」の 3 経路のみ。読めない記録は判定から外すが削除もしない（ただし**再試行の導線は閉じない** — 消さない以上その状態は自然解消せず、ボタンまで無効にすると行き止まりになるため）。失敗と判定したのに失敗の記録が残っていない場合は Manager 側が記録を書く（版数照合だけで検出したケースを取りこぼさない）。**§3.7.4 の Exit codes リストに `9`（同一性確認不能）を追加** — `3` と分ける理由（force-kill を勧めると必ず同じ所へ戻る行き止まりになる）と、上限を既定 `--wait-timeout` より小さく取る理由（識別不能の判定が必ず timeout より先に発火することの機械的保証）を含める。あわせてログ推測の弱点の記述を実態に合わせて訂正（「致命的でない `Logger.Error` で誤判定する」は誤り＝現状 `[ERROR]` は全て非 0 return 経路にある。本当の弱点は文言依存・2 分窓・将来の脆さ）。`Install.bat` の掃除タイミングを「起動時」→「インストール完了時」に訂正。**結果ファイルの消費を `ConsumePreviousRunState()` に一本化**（起動処理の冒頭で 1 回、UI パネル初期化は到達しない経路があるため不可／判定をプロセス内キャッシュして読取り順依存を除去／述語名 `HasUnresolvedFailure` から動詞へ改名）、**判定を 3 値化**（`Unreadable` を `bool` に潰すと記録破損時に silent pass する経路が残る）、exit 6 の定義に「置換が反映されていなかった」を追加。 | Kenshiro Kuroga \& Claude |
 | 2026-09-04 | 1.10.70 | **(#344、Launcher v0.15.0)** §機能4（オーバーレイメニュー）に **初回ゲーム起動時のやめかた案内** を追記。来場者ごとに 1 回、`_launch_game()` 冒頭（`begin_launch` の前）で表示する。**リセットを `screensaver.gd::_ready()` に置く**ことを明記 — `AppState.clear()` は `transition_to_screensaver` 13 経路のうち 2 経路でしか呼ばれず、「遊び終えて退出」「放置して帰る」という最も多い帰り方が通らないため、そこに紐づけると次の来場者に案内が出ない（かつ前の人の帰り方依存で再現不能な形で壊れる）。試遊は `_launch_game()` を通らないので追加ガード不要。 | Kenshiro Kuroga \& Claude |

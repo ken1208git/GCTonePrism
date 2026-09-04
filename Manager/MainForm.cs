@@ -171,7 +171,8 @@ namespace TonePrism.Manager
                 var coord = dbManager?.SessionBackupCoordinator;
                 if (coord != null && coord.IsBackupRunning)
                 {
-                    var dr = MessageBox.Show(this,
+                    // (#449 レビュー H-1) シェル表示後は MainForm が Hide 済みなので `this` は不可視。
+                    var dr = MessageBox.Show(VisibleModalOwnerOrNull(),
                         "バックアップを中止して閉じますか？\n\n変更データ自体は保存済みです（バックアップだけが中断されます。次回起動時の最初の操作で取り直されます）。",
                         "バックアップ中", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
                     if (dr != DialogResult.Yes)
@@ -259,7 +260,9 @@ namespace TonePrism.Manager
                     if (!string.IsNullOrEmpty(lockOwner))
                     {
                         Logger.Warn($"[MainForm] (H5) 他 PC '{lockOwner}' が restore lock 保有中、{operationDescription} を中止");
-                        MessageBox.Show(this,
+                        // (#449 レビュー H-1) 同上。Hide 済み MainForm を owner にすると、シェルが
+                        // 無効化されず擬似モーダルになり、警告表示中にシェルを操作できてしまう。
+                        MessageBox.Show(VisibleModalOwnerOrNull(),
                             $"他 PC ({lockOwner}) が現在データベースの復元処理中です。\n\n" +
                             $"復元処理と書込操作が衝突するとデータ消失のおそれがあるため、{operationDescription} を中止します。\n" +
                             "復元完了 (通常 1 分以内) を待ってから再試行してください。",
@@ -313,8 +316,62 @@ namespace TonePrism.Manager
                 return DialogResult.OK;
             }
 
+            // (#449 レビュー H-1) **`this` を渡さない。** 本経路はシェル表示後の書込操作から呼ばれ、
+            // そのとき MainForm は `Hide()` 済み = 不可視。`ShellOwner` の docstring が明記するとおり
+            // 「隠し MainForm を owner にすると可視シェルが無効化されず擬似モーダルになる」ため、
+            // 「データが破損する恐れ」の警告中にシェルを操作できてしまう (再入)。
+            // 起動時ゲートより発火頻度が高い (別 Manager 稼働中なら書込のたびに出る)。
             return SessionConflictDialog.Show(
-                this, SessionConflictDialogContext.EditOperation, others, launcherOthers, operationDescription);
+                VisibleModalOwnerOrNull(), SessionConflictDialogContext.EditOperation,
+                others, launcherOthers, operationDescription);
+        }
+
+        /// <summary>
+        /// (#449 診断) 物理表示の確定点。判定材料は「`Hide()` を通過した後に発火したか」。
+        ///
+        /// **(レビュー C-1) 発火 = 「Hide は維持されなかった」ではない。** `Hide()` に到達しない／
+        /// 到達前に `Show()` する経路が 3 つあり、そこでも発火する:
+        /// (1) 起動時セッション競合ゲート (`MakeMainFormVisible`、**本 PR が追加した経路**)、
+        /// (2) シェル生成失敗の `FallbackToVisibleMainForm`、(3) DB 未初期化で `Opacity=1` のまま Load を抜ける。
+        /// したがって `HidePassed=` を併記し、**`HidePassed=True` で発火した場合だけ**が
+        /// 「Hide が Load 境界を越えなかった」の証拠になる。判定は #458。**結論が出たら削除してよい。**
+        /// </summary>
+        /// <summary>
+        /// (#449 診断 / #458 で削除) `ShowShellAsMain` の `Hide()` が `MainForm_Load` の境界を越えて
+        /// 維持されるかを実機で確定する。レビューでも複製アプリ 6 構成とこちらの計測で結果が割れ、
+        /// 複製では決着しなかった。
+        ///
+        /// **Timer を使う理由**: `Form.Shown` は最初の表示 1 回しか発火せず、`Hide()` より前に
+        /// 物理表示する経路 (起動時競合ゲート / シェル生成失敗 / DB 未初期化) で消費されてしまう。
+        /// Timer は UI スレッドのメッセージループで発火するので `MainForm_Load` から戻った後に
+        /// **必ず 1 回**動き、否定側 (= Hide は維持された) の結論もログに残る。
+        /// </summary>
+        private void StartHideBoundaryProbe()
+        {
+            try
+            {
+                var probe = new System.Windows.Forms.Timer { Interval = 3000 };
+                probe.Tick += (s, e) =>
+                {
+                    try
+                    {
+                        probe.Stop();
+                        probe.Dispose();
+                        if (IsDisposed) return;
+                        bool physicallyVisible = IsHandleCreated && NativeVisibility.IsWindowVisible(Handle);
+                        Logger.Info("[MainForm] (#449 診断) Load 境界の 3 秒後: Visible=" + Visible
+                            + " IsWindowVisible=" + physicallyVisible
+                            + " Opacity=" + Opacity
+                            + " -> Hide は " + (physicallyVisible ? "維持されなかった" : "維持された"));
+                    }
+                    catch { /* 診断ログの失敗は無視 */ }
+                };
+                probe.Start();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[MainForm] (#449 診断) probe の起動に失敗 (継続): " + ex.Message);
+            }
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -474,9 +531,12 @@ namespace TonePrism.Manager
             // Cancel で Manager 終了 (self row delete 経由で clean exit trail を残す)。
             //
             // (#186 round 3) **gate 維持 + taskbar entry 確保の両立** のため chain pattern を採用:
-            //   - 検出時: `BeginInvoke` で dialog 表示を defer (= MainForm の Show 完了後に dialog が
-            //     owner-modal child で開く → taskbar entry あり、他 window click で裏に行ける、natural
-            //     WinForms 挙動)
+            //   - 検出時: `BeginInvoke` で dialog 表示を defer (= MainForm の Show 完了後に開く)
+            //     **(#449) この段の「MainForm を owner にすれば taskbar entry あり」という前提は失効した。**
+            //     #245 で MainForm が `Opacity=0` + シェル表示後 `Hide()` の裏方窓になり、
+            //     タスクバーに出ないため所有ダイアログを前面に戻す導線が無くなった。現在は
+            //     `MakeMainFormVisible()` で可視 owner を作ってから出す。defer 自体 (= MainForm_Load の
+            //     後続処理より先に dialog を出す) の意義は変わらないので pattern は維持する。
             //   - **panel.Initialize / LoadGames / CleanupZombieStagings / StartBackgroundUpdateCheckIfDue は
             //     全部 `ContinueLoadAfterSessionCheck` に切出し**、
             //     conflict 検出時は MainForm_Load 自体は
@@ -526,8 +586,30 @@ namespace TonePrism.Manager
                         // in-depth で残置。
                         if (IsDisposed || Disposing || _sessionService == null) return;
 
+                        // (#449) **不可視の MainForm を owner にしない。** ここは MainForm_Load から
+                        // BeginInvoke した deferred action で、MainForm は Opacity=0 の裏方窓。
+                        // SessionConflictDialog の API contract も「owner Form を **visible 状態で**
+                        // 渡せば自然な owner-modal child 挙動になる」と明記しており、契約違反だった。
+                        //
+                        // **`null` に倒すだけでは不十分 (レビュー H-2)。** WinForms は owner が null の
+                        // とき `GetActiveWindow()` を owner に代入する。本経路は MainForm の Show 完了後に
+                        // 走る設計なので、その時点の active window は不可視の MainForm になりうる —
+                        // つまり null を渡しても同じ窓に戻り、修正が no-op になる。
+                        //
+                        // ここは**残りの初期化を止めるゲート**で、ユーザーが答えるまで先に進めない。
+                        // 見失うと詰むので、**可視 owner を作ってから**出す。OK なら後続の
+                        // ShowShellAsMain が MainForm を Hide してシェルに移るので、可視化は一時的。
+                        //
+                        // (レビュー Medium) `MakeMainFormVisible` はスプラッシュも閉じる。OK 後の
+                        // `ContinueLoadAfterSessionCheck` (パネル初期化 / LoadGames、SMB 越しで数秒)
+                        // の間、進捗表示が消えて未初期化の旧 UI だけが見える状態になるのは #246 が
+                        // 埋めた穴の再発。**#455 で「ゲート中はスプラッシュを維持する」に分離した**
+                        // — ここで対処すると可視化とスプラッシュ制御を切り離す設計変更になり、
+                        // 本 PR (到達可能性の修正) のスコープを超えるため。
+                        MakeMainFormVisible();
                         var dialogResult = SessionConflictDialog.Show(
-                            this, SessionConflictDialogContext.Startup, otherSessionsAtStartup, launcherSessionsAtStartup);
+                            VisibleModalOwnerOrNull(), SessionConflictDialogContext.Startup,
+                            otherSessionsAtStartup, launcherSessionsAtStartup);
                         if (dialogResult == DialogResult.Cancel)
                         {
                             Logger.Info("[MainForm] user が SessionConflictDialog (Startup) で Cancel 選択、Manager 終了");
@@ -588,11 +670,11 @@ namespace TonePrism.Manager
         /// </summary>
         private void FallbackToVisibleMainForm(string crashMessage)
         {
-            try { Shell.SplashScreenHost.Close(); } catch { }
-            try { this.Opacity = 1; if (!Visible) Show(); } catch { }
+            MakeMainFormVisible();
             if (!string.IsNullOrEmpty(crashMessage))
             {
-                try { MessageBox.Show(this, crashMessage, "起動エラー", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                // (レビュー M-4) 可視化が失敗している可能性があるので `this` 直渡しにしない。
+                try { MessageBox.Show(VisibleModalOwnerOrNull(), crashMessage, "起動エラー", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                 catch { /* fallback ダイアログ自体の失敗は無視 */ }
             }
         }
@@ -775,12 +857,19 @@ namespace TonePrism.Manager
             // 起動時に zombie staging dir (前回 update 失敗の残骸) を cleanup (#108 Phase 4)
             CleanupZombieStagings();
 
+            // (#245 PR5 startup移管 step1) 全 init 完了後、WPF シェルを可視 main として表示し MainForm を裏方化する。
+            //
+            // **更新チェックより先に可視化する (#449)。** 逆順だと、cache が TTL 内のとき
+            // `CheckAsync` が完了済み Task を返し、**完了済み Task の await は継続が同期実行される**ため
+            // そのまま通知 MessageBox に突入して `StartBackgroundUpdateCheckIfDue()` から戻らず、
+            // この行に永久に到達しない = スプラッシュのまま固まる。cache が冷えていれば本物の HTTP で
+            // 非同期になり戻ってくるので、**「ネットワークが遅いおかげで助かっている」**だけの状態だった。
+            // 順序を固定してタイミング依存を消す。
+            ShowShellAsMain();
+
             // 起動時にバックグラウンドで GitHub Releases API を叩いてアップデート check (#108 Phase 4)
             // cache TTL 内なら HTTP を叩かない、起動を遅延させない fire-and-forget pattern
             StartBackgroundUpdateCheckIfDue();
-
-            // (#245 PR5 startup移管 step1) 全 init 完了後、WPF シェルを可視 main として表示し MainForm を裏方化する。
-            ShowShellAsMain();
         }
 
         /// <summary>
@@ -796,6 +885,9 @@ namespace TonePrism.Manager
         /// </summary>
         private void ShowShellAsMain()
         {
+            // (#449 レビュー 4) 外側 catch が「シェル生成 / Show 失敗」なのか「表示後の後処理失敗」なのかを
+            // 区別するためのフラグ。catch から読むので try の外で宣言する。
+            bool shellShown = false;
             try
             {
                 Shell.ShellWindow.SharedDb = dbManager;
@@ -813,12 +905,58 @@ namespace TonePrism.Manager
                     catch (Exception ex) { Logger.Warn("[MainForm] シェル close 後の MainForm.Close 失敗: " + ex.Message); }
                 };
                 shell.Show();
+                // (#449 レビュー 4) **ここから先の失敗で `Instance = null` してはいけない。**
+                // 外側 catch は「シェル生成 / Show 失敗」専用のつもりだったが、実際には
+                // Show 成功後の SplashScreenHost.Close() / Hide() も覆っている。そこで例外が出ると
+                // **実際にはシェルが表示されているのに** Instance が消え、ProcessingDialog の
+                // タスクバー進捗が恒久 no-op になる / ShowInTaskbar が二重表示に倒れる /
+                // VisibleModalOwner が本当に可視なシェルを owner 候補から外す、という形で状態が割れる。
+                shellShown = true;
                 Shell.SplashScreenHost.Close(); // (#246) スプラッシュを閉じる
                 Hide(); // Load 完了済なので Hide で安全に裏方化 (= MainForm の窓・タスクバーボタンを消す)
+                // (#449 診断 / レビュー 2) **必ず 1 行出る形で測る。**
+                // 旧実装は `OnShown` の発火有無で判定していたが、`Form.Shown` は**最初の表示 1 回だけ**
+                // 発火する。起動時競合ゲート / シェル生成失敗 / DB 未初期化の 3 経路では `Hide()` より
+                // **前**に物理表示されるため、そこで 1 回消費されて以後二度と発火しない。すると
+                // 「`HidePassed=True` の行が無い」が **「Hide が維持された」と「プローブが消費された」の
+                // 両方から生じる** = 判定不能を判定済みと誤読する silent pass になっていた。
+                //
+                // Timer は UI スレッドのメッセージループで発火するので、`MainForm_Load` から戻り
+                // `SetVisibleCore` が `ShowWindow` を終えた後に必ず 1 回動く。**否定側の結論も必ず
+                // ログに出る。** #458 で削除する。
+                StartHideBoundaryProbe();
+                // (レビュー M-3) **Opacity も戻す。** 起動時競合ゲートは MakeMainFormVisible で
+                // Opacity=1 にするが、そのままだと「Hide が Load 境界を越えず post-Load に再表示される」
+                // 場合に**未初期化の旧 UI がシェルと並んで完全に見える**二重 UI になる (本 PR 前は
+                // 同じ再表示が Opacity=0 で不可視だった = 新規の退行)。SPEC §3.8.2.1 の「どちらに
+                // 転んでも成立する」根拠 (条件 2 = Opacity > 0) もこれで保たれる。
+                Opacity = 0;
+
+                // (#449) **`Hide()` が Load 境界を越えて維持されるかを実機で確定するための診断ログ。**
+                // レビューでは複製アプリ 6 構成すべてで「post-Load に再表示される」(Visible=True /
+                // IsWindowVisible=True) と実測され、こちらの計測 (PowerShell ハーネス 1 本) とは
+                // 逆の結果になった。複製では決着しないので実アプリで測る。
+                // 再表示されるなら MainForm はタスクバーに残り、SPEC §3.8.2.1 の「起動後は Hide 済み」
+                // という前提と、H-1 の深刻度説明を訂正する必要がある。
+                // **結論が出たらこのログは削除してよい。**
+                // (#449 診断) 判定の本体は OnShown 側 (docstring 参照)。ここは補助情報。#458 で削除。
+                try
+                {
+                    Logger.Info("[MainForm] (#449 診断) Hide 直後: Visible=" + Visible
+                        + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle)));
+                }
+                catch { /* 診断ログの失敗は無視 */ }
                 // (#246 / レビュー #4) ここから先 (前面化・ステータス反映) は **シェル表示済み** なので、失敗しても
-                // フォールバックせずログのみにする。理由: Hide() 後は外側 catch の Opacity=1 では可視化できず
-                // (Visible=false のまま) フォールバックが死蔵になる + シェルは既に出ているのでフォールバック不要。
-                // 外側 catch は「シェル生成 / Show 失敗 (= MainForm 未 Hide)」専用に限定する。
+                // フォールバックせずログのみにする。理由: **シェルは既に表示済みなのでフォールバック不要**。
+                // (レビュー 8) 旧コメントは「Hide 後は Opacity=1 では可視化できず死蔵になる」と書いていたが、
+                // #449 で `MakeMainFormVisible` が無条件 `Show()` + `Activate()` に変わったため可視化は
+                // される。実際の帰結は「死蔵」ではなく**シェルと MainForm の二重 UI**であり、
+                // フォールバックしない理由はそちら。
+                // (レビュー L-1) **ただし外側 catch は実際には限定できていない** — Show 成功後の
+                // SplashScreenHost.Close() / Hide() も覆っている。そこで throw すると shellShown=true なので
+                // Instance は残るが FallbackToVisibleMainForm は走り、シェル可視のまま MainForm も
+                // 可視化されて二重 UI になる (ログも「シェル表示に失敗」と嘘を出す)。到達性は低い
+                // (Close は fail-open) ため許容するが、限定できている前提で読まないこと。
                 try
                 {
                     // 別スレッドのスプラッシュがフォアグラウンドを握る + Hide() でフォアグラウンドが逃げるため、
@@ -839,6 +977,17 @@ namespace TonePrism.Manager
                 // シェル生成 / Show 失敗 = 旧 WinForms UI で起動継続 (graceful degradation)。ここは MainForm 未 Hide
                 // なので可視化できる。シェル失敗は「旧 UI へ静かに degrade」なのでクラッシュダイアログは出さない (null)。
                 Logger.Error("[MainForm] (#245 PR5) WPF シェル表示に失敗、旧 WinForms UI にフォールバック", ex);
+                // (#449 レビュー M-3) **死んだシェルの Instance を残さない。** `ShellWindow.Instance` は
+                // ctor で代入され `Closed` でしか消えないため、Show が HWND 生成後に失敗するとここに
+                // 到達しても Instance が生き残り、VisibleModalOwner が「表示されていないシェル」を
+                // owner として返してしまう。IsVisible check と併せて二重に閉じる。
+                //
+                // (レビュー 4) **ただし Show 成功後の失敗では消さない。** 消すとシェルが見えているのに
+                // 参照だけ失われ、状態が割れる (上の shellShown のコメント参照)。
+                // (レビュー C-5) `_shell` も対で掃除する。同じオブジェクトへの参照が 2 本あるのに
+                // 片方だけ null 化すると、UpdateStatusBar / ShowBackupProgress 等が「表示されていない
+                // シェル」に書き続ける (実害はステータス更新の空振りだが、M-3 対応の趣旨と矛盾する)。
+                if (!shellShown) { try { Shell.ShellWindow.Instance = null; _shell = null; } catch { } }
                 FallbackToVisibleMainForm(null);
             }
         }
@@ -948,7 +1097,195 @@ namespace TonePrism.Manager
         }
 
         /// <summary>
+        /// (#449) **モーダルの owner に渡してよい「今この瞬間に可視でタスクバーに出ている窓」**を返す。
+        /// 該当が無ければ <c>null</c>。
+        ///
+        /// <para>
+        /// **機序 (レビュー M-6 で訂正)**: 所有ダイアログが自前のタスクバーボタンを持たないのは
+        /// **owned であること自体**が理由で、owner の透明度とは関係ない。決定的なのは
+        /// **owner 自身がタスクバーに出ているか** — タスクバーは `GetLastActivePopup` 経由で
+        /// 所有モーダルを前面化するので、owner がタスクバーに居れば戻せる。逆に
+        /// 「まだ表示されていない窓」「`Hide()` 済みの窓」を owner にすると戻す導線が消える。
+        /// #449 の実害は「透明だから」ではなく **`MainForm_Load` が return する前 = MainForm が
+        /// 一度も表示されていない状態の窓を owner にしたから**だった。
+        /// </para>
+        /// <para>
+        /// **`null` は「owner なし」ではない (レビュー H-2)**: WinForms の `MessageBox.Show` は
+        /// owner が `null` のとき呼び出しスレッドの `GetActiveWindow()` を owner に代入する。
+        /// つまり `null` を渡しても不可視の MainForm が owner に戻りうる。**`null` は
+        /// 「これ以上できることが無い」という意味であって、到達可能性の保証ではない。**
+        /// 到達可能性が要る場面 (ゲート dialog 等) は <see cref="MakeMainFormVisible"/> で
+        /// 可視 owner を作ってから渡すこと。
+        /// </para>
+        /// </summary>
+        internal IWin32Window VisibleModalOwnerOrNull()
+        {
+            // [0] **今アクティブな可視モーダルがあればそれを最優先 (レビュー High-2)。**
+            //     ゲーム追加 / 編集フォームは `ShowDialog(ShellOwner.For(shell))` で開かれ、その間
+            //     シェル HWND は `EnableWindow(false)` されている。その内側から出すモーダルの owner を
+            //     シェルにすると、**Win32 の MessageBox は破棄時に owner を EnableWindow(true) するため、
+            //     競合ダイアログを閉じた瞬間にシェルが再有効化され、編集フォームが開いたままシェルを
+            //     操作できてしまう**(別種の再入)。内側のモーダルを owner にすればこの入れ子が壊れない。
+            //     **なぜこれで規約 (= owner はタスクバーに出ている窓) を満たすか (レビュー 6)**:
+            //     この経路で active になる Form は `ShowDialog(ShellOwner.For(shell))` で開かれた
+            //     ゲーム追加 / 編集フォームで、**可視シェルに owned** されている。所有連鎖があるので
+            //     タスクバーのシェルのボタンから `GetLastActivePopup` で最前面の所有モーダル
+            //     (= この MessageBox) まで辿れる。したがって自身が `ShowInTaskbar` でなくても戻せる。
+            //     **将来 owned でない可視 Form が active な瞬間に呼ばれると、この根拠は崩れる。**
+            //     その場合は `ShowInTaskbar` か owner 連鎖の確認を足すこと。
+            //     **自分で閉じる窓を owner にしない (レビュー 6)。** Win32 は owner 破棄時に所有窓を
+            //     道連れに破棄する。`ProcessingDialog` は worker 完了で**自分自身を閉じる**モーダルなので、
+            //     それを owner にすると確認ダイアログが勝手に消えて `MessageBox.Show` が Yes 以外を返す。
+            //     `MainForm_FormClosing` のバックアップ中止確認がこれに当たると `e.Cancel = true` になり、
+            //     シェルは既に閉じているので**窓が 1 つも無い Manager プロセスが生き残る** — #444 と
+            //     同じ「見えない Manager が更新を阻害する」状態を自分で作ることになる。
+            //     あわせて `Modal` も要求する（非モーダルの active Form は owner-modal の前提を満たさない）。
+            Form active = Form.ActiveForm;
+            bool activeIsUsableModal = active != null && active != this && !active.IsDisposed
+                && active.IsHandleCreated && active.Modal
+                && NativeVisibility.IsWindowVisible(active.Handle)
+                // (レビュー B-4) **条件 1 (タスクバーから辿れる) を実際に検査する。**
+                // 「この経路で active になるのは可視シェルに owned されたフォームだけ」は呼出し文脈への
+                // 依存で、呼出しが 1 箇所増えれば無言で破れる。しかも `ShowInTaskbar=false` の Form は
+                // すでに 3 つ存在する (UnsavedSettingsDialog / RestoreReportForm / ImageNameConflictDialog)
+                // ので「将来の話」ではない。自身がタスクバーに出ているか、owner 連鎖の根が可視かを見る。
+                && active.Opacity > 0
+                && (active.ShowInTaskbar || NativeVisibility.IsRootOwnerOnTaskbar(active.Handle));
+            if (activeIsUsableModal && !(active is ProcessingDialog))
+            {
+                return active;
+            }
+            if (activeIsUsableModal)
+            {
+                // **シェルには落とさない。** ProcessingDialog は `ShowDialog(owner = シェル)` されうるので、
+                // その時点でシェルは既に `EnableWindow(false)`。そこへシェルを owner とする MessageBox を
+                // 出して閉じると、破棄時の `EnableWindow(true)` でシェルが再有効化され、step [0] が
+                // 防ごうとしていた再入が別経路で開く (レビュー M-2)。
+                //
+                // **ただし `null` を返しても除外は達成できていない (レビュー B-1、未解決)。**
+                // `null` は「owner なし」ではなく `GetActiveWindow()` であり、この状況で active なのは
+                // まさにその ProcessingDialog なので、**除外したはずの窓が owner に戻る**。
+                // 上の「自分で閉じる窓を owner にしない」は、**現状ではシェルを避ける効果しか無い。**
+                //
+                // 正しく塞ぐには「自己クローズするモーダルの上に、その完了で消えては困る確認を
+                // 出さない」側で解く必要がある (= ProcessingDialog を閉じないか、確認を出さないか)。
+                // owner の選び方では解けないので #461 に分離した。**ここに防護があると読まないこと。**
+                return null;
+            }
+
+            // [1] 可視シェル。WPF Window は既定で ShowInTaskbar=true なので戻す導線がある。
+            //     **`IsVisible` を必ず見る (レビュー M-3)** — `ShellWindow.Instance` は ctor で
+            //     代入され `Closed` でしか消えないため、`shell.Show()` が HWND 生成後に失敗すると
+            //     「表示されていないシェル」の HWND が残る。それを owner にすると本規約違反になる。
+            var shell = Shell.ShellWindow.Instance;
+            if (shell != null && shell.IsVisible && shell.Opacity > 0)   // (レビュー 3) 条件 2 は全段に適用する
+            {
+                IWin32Window shellOwner = Shell.ShellOwner.For(shell);
+                if (shellOwner != null) return shellOwner;
+            }
+
+            // [2] MainForm が **物理的に表示されている**ならそれ (= MakeMainFormVisible 後の degraded 経路)。
+            //
+            //     **`Visible` を信用しない (レビュー High-1)。** WinForms は最初の物理表示より前
+            //     (= `Form_Load` 実行中) でも `Visible == true` を返す。実測:
+            //         in Load : Visible=True  IsWindowVisible=False
+            //     ここで `Visible` を可視の根拠にすると「一度も表示されていない窓」を owner として返し、
+            //     #449 の実害そのものを再生産する。Win32 の `IsWindowVisible` で実表示を確かめる。
+            if (!IsDisposed && IsHandleCreated && NativeVisibility.IsWindowVisible(Handle) && Opacity > 0)
+            {
+                return this;
+            }
+
+            // [3] 該当なし。呼び出し側が到達可能性を要求するなら MakeMainFormVisible を先に呼ぶこと。
+            return null;
+        }
+
+        /// <summary>
+        /// (#449) 窓が**物理的に表示されているか**を Win32 で確かめる。
+        /// WinForms の `Control.Visible` は最初の物理表示より前 (= `Form_Load` 実行中) でも true を
+        /// 返すため、owner の適格判定には使えない (レビュー High-1、実測で確認)。
+        /// </summary>
+        private static class NativeVisibility
+        {
+            [System.Runtime.InteropServices.DllImport("user32.dll")]
+            [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+            internal static extern bool IsWindowVisible(IntPtr hWnd);
+
+            [System.Runtime.InteropServices.DllImport("user32.dll")]
+            private static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
+
+            private const uint GA_ROOTOWNER = 3;
+
+            [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+            private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+            private const int GWL_EXSTYLE = -20;
+            private const int WS_EX_TOOLWINDOW = 0x00000080;
+            private const int WS_EX_APPWINDOW = 0x00040000;
+
+            /// <summary>
+            /// (レビュー 3) owner 連鎖の根 (`GA_ROOTOWNER`) が**タスクバーに出ているか**。
+            ///
+            /// 旧実装は `IsWindowVisible` だけを見ていたが、規約の条件 1 は「タスクバーから辿れる」で
+            /// あって「可視」ではない — **本 PR の中心命題そのもの**（決定的なのはタスクバー在否であって
+            /// 可視性・透明度ではない）を、検査側で取り違えていた。可視だがタスクバーに出ない窓
+            /// (`WS_EX_TOOLWINDOW`) を根に持つモーダルは、#449 と同じく戻す導線が無い。
+            /// </summary>
+            internal static bool IsRootOwnerOnTaskbar(IntPtr hWnd)
+            {
+                try
+                {
+                    IntPtr root = GetAncestor(hWnd, GA_ROOTOWNER);
+                    if (root == IntPtr.Zero || root == hWnd || !IsWindowVisible(root)) return false;
+                    int ex = GetWindowLong(root, GWL_EXSTYLE);
+                    // WS_EX_APPWINDOW は TOOLWINDOW を上書きして強制的にタスクバーへ出す。
+                    if ((ex & WS_EX_APPWINDOW) != 0) return true;
+                    return (ex & WS_EX_TOOLWINDOW) == 0;
+                }
+                catch { return false; }
+            }
+        }
+
+        /// <summary>
+        /// (#449) スプラッシュを閉じ、MainForm を**実際に表示された窓**にする。
+        /// ゲート dialog のように「必ず前面に戻せる」ことが要る場面で、owner を用意するために使う。
+        /// <see cref="FallbackToVisibleMainForm"/> の可視化部分を切り出したもの。
+        /// </summary>
+        private void MakeMainFormVisible()
+        {
+            try { Shell.SplashScreenHost.Close(); }
+            catch (Exception ex) { Logger.Warn("[MainForm] スプラッシュの close に失敗 (継続): " + ex.Message); }
+            try
+            {
+                this.Opacity = 1;
+                // **`if (!Visible)` でガードしない (レビュー High-1)。** WinForms は最初の物理表示より前
+                // (= `Form_Load` 実行中) でも `Visible == true` を返すため、ガードすると `Show()` が
+                // skip されて**窓は表示されないまま**になる。実測:
+                //     in Load     : Visible=True IsWindowVisible=False
+                //     after Show(): Visible=True IsWindowVisible=True   ← 無条件 Show なら表示される
+                Show();
+                // スプラッシュ (別 STA スレッド) がフォアグラウンドを握っていると Show だけでは前面に
+                // 来ないため、ShowShellAsMain と同じく明示的に前へ出す。
+                Activate();
+            }
+            catch (Exception ex)
+            {
+                // (レビュー M-4) **握り潰さない。** ここが失敗すると (1) 起動ゲートで
+                // VisibleModalOwnerOrNull が null に落ちて #449 と同じ状態に戻り、
+                // (2) FallbackToVisibleMainForm のクラッシュ通知そのものが到達不能モーダルになる。
+                // 復旧の最後の砦が無言で壊れるので、痕跡は必ず残す。
+                Logger.Warn("[MainForm] MainForm の可視化に失敗 (モーダルが前面に出ない可能性): " + ex.Message);
+            }
+        }
+
+        /// <summary>
         /// 新バージョン検出時に MessageBox で通知して「アップデート」タブに誘導する (#108 Phase 4)。
+        ///
+        /// **(#456) 「はい」を押しても現在はシェルが遷移しない。** 実装は `tabControl1.SelectedTab`
+        /// = **`Hide()` 済みの MainForm** のタブ切替で、可視シェルは何も変わらない (#245 の置き去り経路)。
+        /// **#449 とは無関係に #245 以降ずっと壊れている** (レビュー 4) — 旧順序でも MainForm は
+        /// ユーザーに見える形で表示されないため、cache の温冷に関わらず「はい」の効果は見えなかった。
+        /// 唯一動くのはシェル生成失敗のフォールバック経路 (MainForm が可視でタブがある)。修正は #456。
         /// `Status=UpdateAvailable` の case でのみ呼ばれる (Skipped / UpToDate / 失敗時は呼ばれない、
         /// = 「スキップしたバージョンが新 release で更新されるまで再通知しない」semantic を上位で保証)。
         ///
@@ -990,7 +1327,17 @@ namespace TonePrism.Manager
             DialogResult dr;
             try
             {
-                dr = MessageBox.Show(this, message, "アップデートの通知",
+                // **裏方の MainForm を owner にしない (#449)。** 決定的なのは owner の透明度ではなく
+                // **owner 自身がタスクバーに出ているか** — タスクバーは `GetLastActivePopup` 経由で
+                // 所有モーダルを前面化するので、owner がタスクバーに居れば戻せる。逆に「まだ表示されて
+                // いない窓」「`Hide()` 済みの窓」を owner にすると戻す導線が消える (詳細は
+                // <see cref="VisibleModalOwnerOrNull"/> / SPEC §3.8.2.1)。
+                //
+                // owner が null のときの `MessageBox.Show` は **owner なしではなく `GetActiveWindow()`
+                // に倒れる** (レビュー H-2)。したがって三項で「owner なしオーバーロード」に分岐しても
+                // 挙動は同じなので畳んである。null は「これ以上できることが無い」の意で、到達可能性の
+                // 保証ではない。
+                dr = MessageBox.Show(VisibleModalOwnerOrNull(), message, "アップデートの通知",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1);
             }
             catch (Exception ex)
@@ -1553,8 +1900,9 @@ namespace TonePrism.Manager
                 "   別場所で管理されていたため)。\n" +
                 "\n" +
                 "設定タブの「ログ」セクションから保存先を変更できます。";
+            // (#449) 起動シーケンス中なので不可視 MainForm を owner にしない。
             MessageBox.Show(
-                this,
+                VisibleModalOwnerOrNull(),
                 body,
                 "ログの保存先の構造が変わりました",
                 MessageBoxButtons.OK,

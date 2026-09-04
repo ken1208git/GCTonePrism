@@ -39,7 +39,14 @@ namespace TonePrism.Manager.Services
         /// merge count で算出。caller (`MainForm`) は両 service から detect 結果を取り、本 method に
         /// 渡す。SPEC §3.8.7.4 参照。
         /// </summary>
-        /// <param name="owner">親 form (modal の親、null も可)。</param>
+        /// <param name="owner">
+        /// 親 form (modal の親)。**物理的に表示されていてタスクバーに出ている窓か <c>null</c> を渡すこと (#449)。**
+        /// 「まだ表示されていない窓」「<c>Hide()</c> 済みの窓」を渡すと、タスクバーから所有モーダルを
+        /// 前面化する導線 (`GetLastActivePopup`) が無くなり、z-order で下に潜ると戻せなくなる。
+        /// **<c>null</c> は「owner なし」ではない** — WinForms は `GetActiveWindow()` を owner に代入する
+        /// ため到達可能性の保証にはならない。確実に戻せる必要がある場面は、呼び出し側が可視 owner を
+        /// 用意してから渡すこと (`MainForm.MakeMainFormVisible`)。
+        /// </param>
         /// <param name="context">context (Startup / EditOperation) で文言切替。</param>
         /// <param name="managerOthers">検出した他 PC Manager session list (= self 除外、`ManagerSessionService.DetectOtherActiveSessions` の戻り値)。空 list 可、ただし `launcherOthers` と合算で 1 件以上が caller 契約。</param>
         /// <param name="launcherOthers">検出した active Launcher session list (PR3b 追加、= `LauncherSessionService.DetectActiveLauncherSessions` の戻り値)。**`managerOthers` と非対称で self-PC Launcher も含みうる** (SPEC §3.8.7.6、同 PC 上の Manager 編集 × Launcher SQLite read の競合も検出対象、安全側設計)。空 list 可。</param>
@@ -122,10 +129,17 @@ namespace TonePrism.Manager.Services
                 Logger.Info("[SessionConflictDialog]   - Launcher: pc=" + info.PcName + " pid=" + info.Pid + " ver=" + info.LauncherVersion);
             }
 
-            // (#186 round 3 確定) Startup context の taskbar entry 不在 / focus 喪失で見失う UI bug は
-            // **caller (`MainForm_Load`) 側で `BeginInvoke` defer + `ContinueLoadAfterSessionCheck`
-            // chain pattern を採用** することで解消。本 dialog 自身は標準 owner-modal MessageBox 呼出
-            // に留め、Startup / EditOperation の文言切替のみが本関数の責務。
+            // (#186 round 3) Startup context の taskbar entry 不在 / focus 喪失で見失う UI bug は
+            // caller 側の `BeginInvoke` defer + `ContinueLoadAfterSessionCheck` chain pattern で
+            // 解消した「はず」だった。
+            //
+            // **(#449) これは解消していなかった。** defer しても owner が「タスクバーに出ていない窓」
+            // (`Opacity=0` / `Hide()` 済みの MainForm) のままだったため、所有モーダルを前面化する
+            // 導線が無く、実際に起動が 8 分間固まった。**決定要因は defer の有無ではなく
+            // owner がタスクバーに出ているか**。規約は SPEC §3.8.2.1 を参照。
+            //
+            // 本 dialog 自身は標準 owner-modal MessageBox 呼出に留め、Startup / EditOperation の
+            // 文言切替のみが本関数の責務、という切り分けは維持する (owner の適格性は caller の責務)。
             //
             // 詳細 rationale (round 1 `MessageBoxOptions.DefaultDesktopOnly` 試行 → user feedback
             // 「常時最前面うざい」で撤回 / round 2 BeginInvoke defer のみ → reviewer High 指摘

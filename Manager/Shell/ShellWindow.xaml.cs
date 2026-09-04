@@ -36,6 +36,11 @@ namespace TonePrism.Manager.Shell
 
         // (#245 PR5) Windows タスクバー進捗の駆動用に、現行シェルを ProcessingDialog から参照するための
         // 静的ハンドル (SharedDb / HostForm と同じ暫定 static 共有パターン)。1 シェル/プロセスなので単一で足りる。
+        /// <summary>
+        /// 現在のシェル窓。**生存しているだけで「表示されている」ことは意味しない** — ctor で代入され
+        /// `Closed` でしか消えないため、`Show()` が HWND 生成後に失敗した場合も残る。owner として
+        /// 使う側は `IsVisible` を必ず確認すること (#449)。生成側は失敗時に null を代入して掃除する。
+        /// </summary>
         internal static ShellWindow Instance;
 
         public ShellWindow()

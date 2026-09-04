@@ -189,7 +189,7 @@ namespace TonePrism.Manager.Controls
             // 相対 path / traverse を許すと Manager Logger / Launcher が CWD 依存の予測不能 path に倒れる。
             if (!string.IsNullOrEmpty(newValue) && !System.IO.Path.IsPathRooted(newValue))
             {
-                MessageBox.Show(this,
+                MessageBox.Show(ModalOwner(),
                     "ログ保存先は絶対パス (例: D:\\TonePrism_logs) で入力してください。\n" +
                     "空欄にするとデフォルト (DB ファイルの隣の logs/) を使用します。",
                     "入力エラー", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -425,6 +425,27 @@ namespace TonePrism.Manager.Controls
         // ダイアログ owner / 設定再読込先は本パネル (this) のまま (hidden MainForm 配下だがダイアログは前面に出る)。
         // 完了で DatabaseReset を発火し MainForm が各パネルを再読込する。WPF 設定ページ側は呼出後に自前で
         // LoadSettings して表示を default に同期する。
+        /// <summary>
+        /// (#449) モーダルの owner。SPEC §3.8.2.1 の規約に従い、可視の窓か <c>null</c> を返す。
+        /// **`this` (= 本パネル) を渡してはいけない** — 設定は #362 で WPF ネイティブ化されたため
+        /// 本パネルはシェルにホストされず、`Hide()` 済み MainForm の子のまま残っているので、
+        /// WinForms は不可視 MainForm を owner にしてしまう。
+        /// </summary>
+        private System.Windows.Forms.IWin32Window ModalOwner()
+        {
+            var main = FindForm() as MainForm;
+            if (main == null)
+            {
+                // (レビュー 8) **無言で null を返さない。** ここに落ちるのは想定外 (本パネルは常に
+                // MainForm 配下) で、null を返すと owner なし = GetActiveWindow() 依存に倒れる。
+                // SessionConflictHelper が「null 経路の silent skip を物理閉鎖する」としたのと同じ理由。
+                Services.Logger.Warn("[SettingsSectionPanel] MainForm を辿れませんでした。"
+                    + "モーダルの owner を解決できないため前面に出ない可能性があります (#449)");
+                return null;
+            }
+            return main.VisibleModalOwnerOrNull();
+        }
+
         internal void ResetDatabaseWithConfirm()
         {
             // (#201 R2 review Low-2) DB リセットは completion 後に LoadLogSettings / LoadBackupSettings で
@@ -441,9 +462,12 @@ namespace TonePrism.Manager.Controls
             if (Services.SessionConflictHelper.CheckBeforeWrite(this, "データベース初期化") == DialogResult.Cancel) return;
             using (var confirmForm = new ResetDatabaseConfirmForm())
             {
-                // (round 3 review L-1) owner=this 渡しで同 method 内の他 dialog (FolderDeletionFailureDialog /
-                // MessageBox) と pattern 統一、taskbar separate entry + modal stack の不整合を防止。
-                if (confirmForm.ShowDialog(this) != DialogResult.Yes) return;
+                // (#449 レビュー H-2) **`this` を渡さない。** 設定は #362 で WPF ネイティブ化され、
+                // 本パネルはシェルにホストされず `Hide()` 済み MainForm の子のまま残っている。
+                // そのため `this` 渡しは不可視 MainForm を owner 連鎖の頂点にしてしまい、
+                // (a) シェルが無効化されず**破壊的な DB 全削除の確認中にシェルを操作できる**擬似モーダル、
+                // (b) owner がタスクバーに居ないので長い処理中に見失うと戻せない、の両方を踏む。
+                if (confirmForm.ShowDialog(ModalOwner()) != DialogResult.Yes) return;
             }
             if (Services.SessionConflictHelper.CheckBeforeWrite(this, "データベース初期化") == DialogResult.Cancel) return;
 
@@ -473,7 +497,7 @@ namespace TonePrism.Manager.Controls
                 AllowCancel = false
             })
             {
-                var dr = dialog.ShowDialog(this);
+                var dr = dialog.ShowDialog(ModalOwner());   // (#449 レビュー H-2)
                 if (dr != DialogResult.OK)
                 {
                     return;
@@ -498,7 +522,7 @@ namespace TonePrism.Manager.Controls
             {
                 using (var failDialog = new FolderDeletionFailureDialog(resetResult.Path, resetResult.LastError))
                 {
-                    var dr = failDialog.ShowDialog(this);
+                    var dr = failDialog.ShowDialog(ModalOwner());   // (#449 レビュー H-2)
                     if (dr == DialogResult.Retry)
                     {
                         resetResult = FolderDeletionService.TryDelete(resetResult.Path);
@@ -506,7 +530,7 @@ namespace TonePrism.Manager.Controls
                     else
                     {
                         // 諦めた場合は警告 MessageBox を出して終了 (退避フォルダはゴミとして残る)
-                        MessageBox.Show(this,
+                        MessageBox.Show(ModalOwner(),
                             "データベースのリセットは完了しましたが、退避済みの旧 games フォルダの削除を諦めました。\n" +
                             "後で手動削除してください:\n  " + resetResult.Path,
                             "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -515,7 +539,7 @@ namespace TonePrism.Manager.Controls
                 }
             }
 
-            MessageBox.Show(this,
+            MessageBox.Show(ModalOwner(),
                 "データベースのリセットが完了しました。",
                 "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }

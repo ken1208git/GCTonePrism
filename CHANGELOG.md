@@ -2546,6 +2546,54 @@ PR #150 で dir rename (`GCTonePrism_Launcher/` → `Launcher/`) に連動して
 
 ## Manager（管理ソフト）
 
+### [Manager v0.34.3] - 2026-09-04
+
+- **起動時のダイアログが前面に戻せなくなり、起動スプラッシュのまま固まる問題を修正 (#449)**。仮想本番で 8 分間停止し、外部から Win32 API でダイアログを閉じるまで復帰しなかった。
+
+**原因 (1): owner がタスクバーに出ていない窓だった**
+
+所有ダイアログが自前のタスクバーボタンを持たないのは **owned であること自体**が理由で、owner の透明度とは関係ない。決定的なのは **owner 自身がタスクバーに出ているか** — タスクバーは `GetLastActivePopup` 経由で所有モーダルを前面化するので、owner がタスクバーに居れば戻せる。逆に「**まだ表示されていない窓**」「`Hide()` 済みの窓」を owner にすると戻す導線が消える。
+
+Manager の MainForm は WPF シェル移行 (#245) 後、`Opacity = 0` で起動し `ShowShellAsMain` で `Hide()` される裏方窓になった。#449 の実害は `MainForm_Load` が return する前＝**一度も表示されていない窓**を owner にしたことによる。起動スプラッシュ (#246) は `Topmost="False"` なので原因ではない。
+
+**原因 (2): 通知がシェル可視化より先に走りうる**
+
+`StartBackgroundUpdateCheckIfDue()` が `ShowShellAsMain()` より前にあった。`UpdateChecker.CheckAsync` は cache が TTL 内なら HTTP を叩かず**完了済み Task** を返し、**完了済み Task の await は継続が同期実行される**ため、そのまま MessageBox に突入して呼び出しから戻らず、シェル可視化に永久に到達しない。cache が冷えていれば本物の HTTP で非同期になり戻ってくるので、**「ネットワークが遅いおかげで助かっている」**だけのタイミング依存だった。
+
+**修正**
+
+- `ShowShellAsMain()` を更新チェックより**前**へ移し、タイミング依存を消す
+- モーダル owner を `VisibleModalOwnerOrNull()` に集約。**今アクティブな可視モーダル → 可視シェル → 物理表示されている MainForm → `null`** の順に返す
+  - **可視判定に `Control.Visible` を使わない**。WinForms は最初の物理表示より前 (= `Form_Load` 実行中) でも `Visible == true` を返す（実測確認）。`Visible` を根拠にすると「一度も表示されていない窓」を可視と誤認し、#449 をそのまま再生産する。Win32 の `IsWindowVisible` で判定する
+  - **アクティブな可視モーダルを最優先する理由**: ゲーム追加 / 編集フォームは `ShowDialog(shellOwner)` で開かれ、その間シェル HWND は `EnableWindow(false)` されている。内側から出すモーダルの owner をシェルにすると、**Win32 の MessageBox は破棄時に owner を `EnableWindow(true)` するため、閉じた瞬間にシェルが再有効化され、編集フォームが開いたままシェルを操作できてしまう**（別種の再入）
+- `MakeMainFormVisible()`: **`if (!Visible)` でガードせず無条件に `Show()` + `Activate()`**（ガードすると Load 中は skip されて表示されない。実測で無条件 Show なら `IsWindowVisible=True` になることを確認）
+- `ShellWindow.Instance` は ctor で代入され `Closed` でしか消えないため、`Show()` が HWND 生成後に失敗すると「表示されていないシェル」が残る。`IsVisible` チェックと、生成失敗時の `Instance = null` 掃除で二重に閉じた
+
+**`null` は「owner なし」ではない**
+
+WinForms の `MessageBox.Show` は owner が `null` のとき**呼び出しスレッドの `GetActiveWindow()` を owner に代入する**。したがって `null` を渡しても不可視の窓が owner に戻りうる。**`null` は「これ以上できることが無い」の意で、到達可能性の保証ではない。** 確実に戻せる必要があるゲート dialog は `MakeMainFormVisible()` で可視 owner を作ってから出す。この訂正に伴い、「owner なしオーバーロードに分岐する」意味のない三項も畳んだ。
+
+**起動経路のダイアログを全数監査した**
+
+同じ穴が空いていた箇所（および、直しきれず「未解決」に分類したもの）:
+
+- **同時起動の競合 (Startup)**: 不可視 MainForm を渡していた（`SessionConflictDialog` の docstring が「owner を **visible 状態で**渡せば」を API contract と明記しており契約違反）。**この dialog は「シェルを先に出す」解決が取れない** — 残りの初期化を止めるゲートであり、シェルはまだ存在せず、出せばゲートの意味が消える。可視 owner を作ってから出す形にした
+- **同時起動の競合 (EditOperation) / 他 PC 復元中の警告 / バックアップ中の終了確認**: シェル表示後は MainForm が `Hide()` 済みで**恒久的に契約違反**だった。`ShellOwner` の docstring が「隠し MainForm を owner にすると可視シェルが無効化されず擬似モーダルになる」とこの経路を名指しで否定していた。起動時ゲートより発火頻度が高い（別 Manager 稼働中なら書込操作のたび）
+- **ログ保存先の移行通知 (#201)**: `this` 直渡しはやめたが、**修正が完了した扱いにはしない**。呼び出しがシェル生成前で `VisibleModalOwnerOrNull()` が必ず `null` を返すため、実効は `GetActiveWindow()` 依存 = 下の「未解決」と同じ状態。SPEC の未解決リストに含めてある
+- DB 初期化プロンプト ×2 / 更新の完了・未完了・確認不能 ×3 / `Program.cs` の起動エラー ×2 は**元から owner を渡していない**。**だから表面化していなかった** — ただし上記のとおり `null` は保証ではないので「未解決」として扱う
+- 起動失敗フォールバック (`FallbackToVisibleMainForm`) は可視化してから `VisibleModalOwnerOrNull()` を渡す（`this` 直渡しだと、可視化自体が失敗したときにクラッシュ通知が到達不能モーダルになる）
+- **本リリースには一時的な診断ログ 2 本が入っています**（`[MainForm] (#449 診断) …`）。「`ShowShellAsMain` の `Hide()` が `MainForm_Load` の境界を越えて維持されるか」がレビューでも実測が割れて決着しなかったため、実機で確定させるためのもの。**#458 で結論を出して削除します。**
+- **`ProcessingDialog` を owner 候補から除外した処理は、現状「シェルを避ける」効果しかありません（#461、未解決）**。`null` は「owner なし」ではなく `GetActiveWindow()` なので、除外したはずの窓が owner に戻ります。道連れ破棄の問題は owner の選び方では解けないため分離しました
+- **設定パネル由来のダイアログ（DB リセットの確認 / 進捗 / フォルダ削除失敗 / 退避フォルダ削除の警告 / 完了通知）も修正**。特に**完了通知は DB リセットの主経路で毎回出る**うえ、SMB 越しの長い処理直後という「見失う」条件が最も揃う場面。設定は #362 で WPF ネイティブ化されたため、**このパネルだけシェルにホストされず `Hide()` 済み MainForm の子のまま残っていた**。破壊的な DB 全削除の確認中にシェルを操作できる擬似モーダルと、長い処理中に見失うと戻せない状態の両方を踏んでいた
+- **本リリースで owner を付け直したのは「更新通知 / 競合ゲート（起動時・編集操作時）/ 他 PC 復元中の警告 / バックアップ中止の終了確認 / 設定パネル由来の 3 種」**。更新の完了・未完了・確認不能、DB 初期化プロンプト、`Program.cs` の起動エラー、ログ保存先の移行通知は **owner を渡さないまま**で、SPEC の「未解決」に分類してある（実効 `null` = `GetActiveWindow()` 依存で、保証ではない）
+- **監査で見つかった別の欠陥 (#456)**: 通知の「はい」を押しても**シェルは何も遷移しない**。実装が `Hide()` 済み MainForm のタブ切替のままで、#245 の置き去り経路。**本件は本リリースとは無関係に #245 以降ずっと壊れている**（旧順序でも MainForm はユーザーに見える形で表示されないため、cache の温冷に関わらず「はい」の効果は見えなかった）。唯一動くのはシェル生成失敗のフォールバック経路。修正は #456 に分離
+
+**付随して分かったこと**
+
+通知マーカー (`update_notified_tag`) は MessageBox が正常に閉じたときだけ記録される。つまりタスクマネージャーで kill すると**次回起動でも同じ場所で止まる無限ループ**になる。本修正で入口ごと塞がる。
+
+- bump 判断: bugfix のみ。**patch（v0.34.2 → v0.34.3）**。
+
 ### [Manager v0.34.2] - 2026-09-04
 
 - **更新前の起動中プロセスチェックに「自分以外の Manager」を追加 (#444)**。従来は Launcher と Companions しか見ておらず（`ProcessTerminator.EnumerateRunning`）、**同じ PC で 2 つ目の Manager が開いていても素通り**していた。2 つ目は単一起動チェックで modal を出すが、**その modal は OK を押すまで閉じず、その間 `Manager/` 配下の exe / dll を掴み続ける**。本番ではこれが 2 分 42 秒生き残り、Updater の `Manager` → `Manager.bak` rename がアクセス拒否になった（2026-09-04、v0.11.1 の適用失敗）。
