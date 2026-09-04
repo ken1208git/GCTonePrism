@@ -189,7 +189,7 @@ namespace TonePrism.Manager.Controls
             // 相対 path / traverse を許すと Manager Logger / Launcher が CWD 依存の予測不能 path に倒れる。
             if (!string.IsNullOrEmpty(newValue) && !System.IO.Path.IsPathRooted(newValue))
             {
-                MessageBox.Show(this,
+                MessageBox.Show(ModalOwner(),
                     "ログ保存先は絶対パス (例: D:\\TonePrism_logs) で入力してください。\n" +
                     "空欄にするとデフォルト (DB ファイルの隣の logs/) を使用します。",
                     "入力エラー", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -434,7 +434,16 @@ namespace TonePrism.Manager.Controls
         private System.Windows.Forms.IWin32Window ModalOwner()
         {
             var main = FindForm() as MainForm;
-            return main != null ? main.VisibleModalOwnerOrNull() : null;
+            if (main == null)
+            {
+                // (レビュー 8) **無言で null を返さない。** ここに落ちるのは想定外 (本パネルは常に
+                // MainForm 配下) で、null を返すと owner なし = GetActiveWindow() 依存に倒れる。
+                // SessionConflictHelper が「null 経路の silent skip を物理閉鎖する」としたのと同じ理由。
+                Services.Logger.Warn("[SettingsSectionPanel] MainForm を辿れませんでした。"
+                    + "モーダルの owner を解決できないため前面に出ない可能性があります (#449)");
+                return null;
+            }
+            return main.VisibleModalOwnerOrNull();
         }
 
         internal void ResetDatabaseWithConfirm()
@@ -453,8 +462,6 @@ namespace TonePrism.Manager.Controls
             if (Services.SessionConflictHelper.CheckBeforeWrite(this, "データベース初期化") == DialogResult.Cancel) return;
             using (var confirmForm = new ResetDatabaseConfirmForm())
             {
-                // (round 3 review L-1) owner=this 渡しで同 method 内の他 dialog (FolderDeletionFailureDialog /
-                // MessageBox) と pattern 統一、taskbar separate entry + modal stack の不整合を防止。
                 // (#449 レビュー H-2) **`this` を渡さない。** 設定は #362 で WPF ネイティブ化され、
                 // 本パネルはシェルにホストされず `Hide()` 済み MainForm の子のまま残っている。
                 // そのため `this` 渡しは不可視 MainForm を owner 連鎖の頂点にしてしまい、
@@ -523,7 +530,7 @@ namespace TonePrism.Manager.Controls
                     else
                     {
                         // 諦めた場合は警告 MessageBox を出して終了 (退避フォルダはゴミとして残る)
-                        MessageBox.Show(this,
+                        MessageBox.Show(ModalOwner(),
                             "データベースのリセットは完了しましたが、退避済みの旧 games フォルダの削除を諦めました。\n" +
                             "後で手動削除してください:\n  " + resetResult.Path,
                             "警告", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -532,7 +539,7 @@ namespace TonePrism.Manager.Controls
                 }
             }
 
-            MessageBox.Show(this,
+            MessageBox.Show(ModalOwner(),
                 "データベースのリセットが完了しました。",
                 "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }

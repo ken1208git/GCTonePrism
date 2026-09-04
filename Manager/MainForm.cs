@@ -336,20 +336,42 @@ namespace TonePrism.Manager
         /// したがって `HidePassed=` を併記し、**`HidePassed=True` で発火した場合だけ**が
         /// 「Hide が Load 境界を越えなかった」の証拠になる。判定は #458。**結論が出たら削除してよい。**
         /// </summary>
-        /// <summary>(#449 診断) `ShowShellAsMain` の `Hide()` を通過したか。#458 で削除。</summary>
-        private bool _hidePassed;
-
-        protected override void OnShown(EventArgs e)
+        /// <summary>
+        /// (#449 診断 / #458 で削除) `ShowShellAsMain` の `Hide()` が `MainForm_Load` の境界を越えて
+        /// 維持されるかを実機で確定する。レビューでも複製アプリ 6 構成とこちらの計測で結果が割れ、
+        /// 複製では決着しなかった。
+        ///
+        /// **Timer を使う理由**: `Form.Shown` は最初の表示 1 回しか発火せず、`Hide()` より前に
+        /// 物理表示する経路 (起動時競合ゲート / シェル生成失敗 / DB 未初期化) で消費されてしまう。
+        /// Timer は UI スレッドのメッセージループで発火するので `MainForm_Load` から戻った後に
+        /// **必ず 1 回**動き、否定側 (= Hide は維持された) の結論もログに残る。
+        /// </summary>
+        private void StartHideBoundaryProbe()
         {
-            base.OnShown(e);
             try
             {
-                Logger.Info("[MainForm] (#449 診断) OnShown 発火: HidePassed=" + _hidePassed
-                    + " (True で発火したときだけ「Hide が維持されなかった」の証拠) Visible=" + Visible
-                    + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle))
-                    + " Opacity=" + Opacity + " ShowInTaskbar=" + ShowInTaskbar);
+                var probe = new System.Windows.Forms.Timer { Interval = 3000 };
+                probe.Tick += (s, e) =>
+                {
+                    try
+                    {
+                        probe.Stop();
+                        probe.Dispose();
+                        if (IsDisposed) return;
+                        bool physicallyVisible = IsHandleCreated && NativeVisibility.IsWindowVisible(Handle);
+                        Logger.Info("[MainForm] (#449 診断) Load 境界の 3 秒後: Visible=" + Visible
+                            + " IsWindowVisible=" + physicallyVisible
+                            + " Opacity=" + Opacity
+                            + " -> Hide は " + (physicallyVisible ? "維持されなかった" : "維持された"));
+                    }
+                    catch { /* 診断ログの失敗は無視 */ }
+                };
+                probe.Start();
             }
-            catch { /* 診断ログの失敗は無視 */ }
+            catch (Exception ex)
+            {
+                Logger.Warn("[MainForm] (#449 診断) probe の起動に失敗 (継続): " + ex.Message);
+            }
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -892,7 +914,17 @@ namespace TonePrism.Manager
                 shellShown = true;
                 Shell.SplashScreenHost.Close(); // (#246) スプラッシュを閉じる
                 Hide(); // Load 完了済なので Hide で安全に裏方化 (= MainForm の窓・タスクバーボタンを消す)
-                _hidePassed = true;   // (#449 診断 / レビュー C-1) OnShown の判定材料
+                // (#449 診断 / レビュー 2) **必ず 1 行出る形で測る。**
+                // 旧実装は `OnShown` の発火有無で判定していたが、`Form.Shown` は**最初の表示 1 回だけ**
+                // 発火する。起動時競合ゲート / シェル生成失敗 / DB 未初期化の 3 経路では `Hide()` より
+                // **前**に物理表示されるため、そこで 1 回消費されて以後二度と発火しない。すると
+                // 「`HidePassed=True` の行が無い」が **「Hide が維持された」と「プローブが消費された」の
+                // 両方から生じる** = 判定不能を判定済みと誤読する silent pass になっていた。
+                //
+                // Timer は UI スレッドのメッセージループで発火するので、`MainForm_Load` から戻り
+                // `SetVisibleCore` が `ShowWindow` を終えた後に必ず 1 回動く。**否定側の結論も必ず
+                // ログに出る。** #458 で削除する。
+                StartHideBoundaryProbe();
                 // (レビュー M-3) **Opacity も戻す。** 起動時競合ゲートは MakeMainFormVisible で
                 // Opacity=1 にするが、そのままだと「Hide が Load 境界を越えず post-Load に再表示される」
                 // 場合に**未初期化の旧 UI がシェルと並んで完全に見える**二重 UI になる (本 PR 前は
@@ -1117,7 +1149,8 @@ namespace TonePrism.Manager
                 // 依存で、呼出しが 1 箇所増えれば無言で破れる。しかも `ShowInTaskbar=false` の Form は
                 // すでに 3 つ存在する (UnsavedSettingsDialog / RestoreReportForm / ImageNameConflictDialog)
                 // ので「将来の話」ではない。自身がタスクバーに出ているか、owner 連鎖の根が可視かを見る。
-                && (active.ShowInTaskbar || NativeVisibility.IsRootOwnerVisible(active.Handle));
+                && active.Opacity > 0
+                && (active.ShowInTaskbar || NativeVisibility.IsRootOwnerOnTaskbar(active.Handle));
             if (activeIsUsableModal && !(active is ProcessingDialog))
             {
                 return active;
@@ -1145,7 +1178,7 @@ namespace TonePrism.Manager
             //     代入され `Closed` でしか消えないため、`shell.Show()` が HWND 生成後に失敗すると
             //     「表示されていないシェル」の HWND が残る。それを owner にすると本規約違反になる。
             var shell = Shell.ShellWindow.Instance;
-            if (shell != null && shell.IsVisible)
+            if (shell != null && shell.IsVisible && shell.Opacity > 0)   // (レビュー 3) 条件 2 は全段に適用する
             {
                 IWin32Window shellOwner = Shell.ShellOwner.For(shell);
                 if (shellOwner != null) return shellOwner;
@@ -1183,16 +1216,31 @@ namespace TonePrism.Manager
 
             private const uint GA_ROOTOWNER = 3;
 
+            [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+            private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+            private const int GWL_EXSTYLE = -20;
+            private const int WS_EX_TOOLWINDOW = 0x00000080;
+            private const int WS_EX_APPWINDOW = 0x00040000;
+
             /// <summary>
-            /// (レビュー B-4) owner 連鎖の根 (`GA_ROOTOWNER`) が物理表示されているか。
-            /// タスクバーは `GetLastActivePopup` で根から所有モーダルへ辿るので、根が見えていれば戻せる。
+            /// (レビュー 3) owner 連鎖の根 (`GA_ROOTOWNER`) が**タスクバーに出ているか**。
+            ///
+            /// 旧実装は `IsWindowVisible` だけを見ていたが、規約の条件 1 は「タスクバーから辿れる」で
+            /// あって「可視」ではない — **本 PR の中心命題そのもの**（決定的なのはタスクバー在否であって
+            /// 可視性・透明度ではない）を、検査側で取り違えていた。可視だがタスクバーに出ない窓
+            /// (`WS_EX_TOOLWINDOW`) を根に持つモーダルは、#449 と同じく戻す導線が無い。
             /// </summary>
-            internal static bool IsRootOwnerVisible(IntPtr hWnd)
+            internal static bool IsRootOwnerOnTaskbar(IntPtr hWnd)
             {
                 try
                 {
                     IntPtr root = GetAncestor(hWnd, GA_ROOTOWNER);
-                    return root != IntPtr.Zero && root != hWnd && IsWindowVisible(root);
+                    if (root == IntPtr.Zero || root == hWnd || !IsWindowVisible(root)) return false;
+                    int ex = GetWindowLong(root, GWL_EXSTYLE);
+                    // WS_EX_APPWINDOW は TOOLWINDOW を上書きして強制的にタスクバーへ出す。
+                    if ((ex & WS_EX_APPWINDOW) != 0) return true;
+                    return (ex & WS_EX_TOOLWINDOW) == 0;
                 }
                 catch { return false; }
             }

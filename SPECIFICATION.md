@@ -1378,7 +1378,7 @@ Release.ps1 と一致 (caller CI は `%ERRORLEVEL%` で 4 通り区別):
 1. **タスクバーから辿れること** — 物理的に表示済みで、自身または owner 連鎖の先がタスクバーに出ている
 2. **ユーザーが視認できること** — `Opacity > 0`
 
-条件 1 は step 1 では機械的に検査する（`ShowInTaskbar` か、owner 連鎖の根 `GA_ROOTOWNER` が可視か）。`ShowInTaskbar=false` の Form は既に 3 つ存在する（`UnsavedSettingsDialog` / `RestoreReportForm` / `ImageNameConflictDialog`）ので「将来の話」ではない。step 2 / 3（シェル / MainForm）は既定 `ShowInTaskbar=true` に依存している。
+条件 1 は step 1 で機械的に検査する（`ShowInTaskbar`、または owner 連鎖の根 `GA_ROOTOWNER` が**タスクバーに出ている**か = 可視かつ `WS_EX_TOOLWINDOW` でない）。**「根が可視か」では不十分** — 可視だがタスクバーに出ない窓を根に持つモーダルは #449 と同じく戻せず、これは本規約の中心命題（決定的なのはタスクバー在否であって可視性ではない）を検査側で取り違えることになる。`ShowInTaskbar=false` の Form は既に 3 つ存在する（`UnsavedSettingsDialog` / `RestoreReportForm` / `ImageNameConflictDialog`）ので「将来の話」ではない。条件 2（`Opacity > 0`）は step 1 / 2 / 3 すべてに適用する。
 
 条件 1 だけでは足りない（レビュー指摘）。`Opacity = 0` の窓はタスクバーボタンを持ちうるが、ユーザーには「押しても何も見えない」ので、モーダルの所在を伝える窓としては機能しない。実装 `VisibleModalOwnerOrNull` の `Opacity > 0` はこの条件 2 に対応する。
 
@@ -1388,7 +1388,9 @@ Release.ps1 と一致 (caller CI は `%ERRORLEVEL%` で 4 通り区別):
 
 Manager の MainForm は WPF シェル移行 (#245) 後、ctor で `Opacity = 0` にされ、`ShowShellAsMain` で `Hide()` される裏方窓になった。**危険はプロセス全期間に及ぶ**（起動中は「まだ表示されていない」、起動後は「Hide 済み」）。
 
-> **未決着 (#449)**: 「`ShowShellAsMain` の `Hide()` が `MainForm_Load` の境界を越えて維持されるか」は結論が出ていない。レビュー側は複製アプリ 6 構成（.NET FW 4.8 / net10、`Opacity` 有無、WPF 込みの構造複製）すべてで**post-Load に再表示される**（`Visible=True` / `IsWindowVisible=True`）と実測し、こちら側の計測（PowerShell ハーネス）は逆の結果だった。複製では決着しないため、`ShowShellAsMain` に診断ログを仕込んで**実機で確定させる**（判定は `OnShown` の発火有無。**確定後に診断を削除するところまでが #458**）。**判定は `OnShown` の発火有無、ただし `HidePassed=True` で発火した場合だけ**が「Hide が Load 境界を越えなかった」の証拠になる。`Hide()` に到達しない／到達前に `Show()` する経路が 3 つある（起動時競合ゲートの `MakeMainFormVisible` / シェル生成失敗のフォールバック / DB 未初期化）ため、発火そのものは証拠にならない。`Hide 直後:` 行は補助情報。再表示されるなら MainForm はタスクバーに残るので、上記「起動後は Hide 済み」と、それを根拠にした深刻度の説明を訂正すること。
+> **未決着 (#449)**: 「`ShowShellAsMain` の `Hide()` が `MainForm_Load` の境界を越えて維持されるか」は結論が出ていない。レビュー側は複製アプリ 6 構成（.NET FW 4.8 / net10、`Opacity` 有無、WPF 込みの構造複製）すべてで**post-Load に再表示される**（`Visible=True` / `IsWindowVisible=True`）と実測し、こちら側の計測（PowerShell ハーネス）は逆の結果だった。複製では決着しないため、`ShowShellAsMain` に診断ログを仕込んで**実機で確定させる**（判定は `OnShown` の発火有無。**確定後に診断を削除するところまでが #458**）。判定は **`(#449 診断) Load 境界の 3 秒後:` の 1 行**（`-> Hide は 維持された/維持されなかった` まで出る）。`Hide()` 直後の行は補助情報。
+
+> 当初は `OnShown` の発火有無で判定していたが、`Form.Shown` は**最初の表示 1 回だけ**発火するため、`Hide()` より前に物理表示する 3 経路（起動時競合ゲート / シェル生成失敗のフォールバック / DB 未初期化）で消費され、以後二度と発火しない。すると「行が無い」が **「Hide が維持された」と「プローブが消費された」の両方から生じ**、判定不能を判定済みと誤読する silent pass になっていた。Timer は UI スレッドのメッセージループで `MainForm_Load` から戻った後に必ず 1 回発火するので、**否定側の結論も必ずログに出る**。再表示されるなら MainForm はタスクバーに残るので、上記「起動後は Hide 済み」と、それを根拠にした深刻度の説明を訂正すること。
 >
 > なお**どちらに転んでも本規約と実装は成立する** — 上記の条件 2 (`Opacity > 0`) により、透明のまま再表示されていても MainForm は owner に選ばれない。
 
@@ -1437,7 +1439,7 @@ after Show(): Visible=True  IsWindowVisible=True    ← 無条件 Show() なら�
 以下は owner を渡していない（= 実効 `null`）。`MainForm_Load` が return する前で MainForm がまだ active window になっていない時点で出るため、実測では `GetActiveWindow()` が 0 に倒れて top-level 窓になる。**ただしこれは保証ではない。**
 
 - `TryShowUpdateCompletedDialog`（✓ 完了 / ✗ 未完了 / 確認できません）
-- DB 初期化プロンプト ×2
+- **DB 初期化プロンプト ×2（最頻経路。要 F-4 実測）** — 本番導入形態が「まっさら新規インストール」なので、**全ユーザーの初回起動で必ず通る**。低頻度経路（設定の DB リセット / 起動時競合）を直して最頻経路を未解決に置くのは blast radius の順序として逆転している。実測で潜るなら `MakeMainFormVisible()` をこの 2 プロンプトの前にも呼ぶだけで同じパターンを適用できる（追加設計は不要）。**リリース前に必ず実測すること**
 - `Program.cs` の起動エラー ×2
 - **同 PC 重複起動の modal**（`Program.cs`「Manager は 1 つだけ起動できます」）— `Application.Run` より前で**窓が 1 つも存在しない**ため `GetActiveWindow()` は必ず 0 に倒れ、top-level = 到達可能。**未解決ではなく「安全と確認済み」**（#444 でこの modal がプロセスを 2 分 42 秒生かして更新を阻害した実績があるが、それは到達可能性とは別の問題で #447）
 - **ログ保存先の移行通知 (#201)** — `this` 直渡しはやめたが、呼び出しがシェル生成前なので `VisibleModalOwnerOrNull()` は `null` を返す
