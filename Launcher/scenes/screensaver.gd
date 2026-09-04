@@ -22,6 +22,12 @@ var _db_manager: DatabaseManager
 var _logo_base_y: float = 0.0
 
 func _ready():
+	# (#344) ここに着いた = 来場者が入れ替わった。中断メニューの案内を次の人にも出す。
+	# **リセットをここに置くのが要点** — `AppState.clear()` は退出経路の一部でしか呼ばれず、
+	# 「遊び終えて退出」「放置して帰る」という最も多い帰り方が通らない。この画面は経路を問わず
+	# 必ず通るので、1 箇所で全経路をカバーできる (初回説明 #253 と同じ「毎回が初回」の考え方)。
+	AppState.pause_hint_shown = false
+
 	# キー入力とコントローラー入力を有効化
 	set_process_input(true)
 	set_process(true)

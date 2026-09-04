@@ -15,7 +15,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 [application]
 
 config/name="TonePrism_Launcher"
-config/version="0.14.0"
+config/version="0.15.0"
 run/main_scene="res://scenes/screensaver.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
 run/flush_stdout_on_print=true

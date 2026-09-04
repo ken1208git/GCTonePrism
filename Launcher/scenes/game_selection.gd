@@ -764,6 +764,34 @@ func _enter_from_game_exit() -> void:
 func _launch_game() -> void:
 	if _games.is_empty() or _session_busy():
 		return
+
+	# (#344) この来場者の 1 本目だけ、やめかたを案内してから起動する。
+	#
+	# **ここ (begin_launch の前) に置く理由**: 起動演出が始まる前なので干渉しない。遊び終えた後や
+	# 初回説明の中で言っても、「これから遊ぶ」直前ほど文脈が近くないため刺さらない (来場者は
+	# 初回説明を読み飛ばすし、遊ぶ頃には忘れる)。やめかたが分からないとゲームから戻れず
+	# スタッフ呼びになる = 当日いちばん人手を食う事故。
+	#
+	# **フラグを先に立ててから出す**: OK のコールバックで本関数を呼び直す作りなので、後に立てると
+	# 無限ループになる。ダイアログが何らかの理由で閉じられなかった場合も、次の起動は素通りする
+	# (案内が出ないことより、起動できないことの方が来場者にとって重い)。
+	#
+	# 試遊 (#311) はここを通らない (`service_mode_overlay` が `GameSession.begin_launch` を直呼び) ので
+	# 追加のガードは要らない。
+	if not AppState.pause_hint_shown:
+		AppState.pause_hint_shown = true
+		DialogManager.show_message("ゲームをはじめる前に",
+			"ゲームを途中でやめたいときは、キーボードの HOMEキー
+"
+			+ "（コントローラーは中央の Guideボタン）を押してください。
+
+"
+			+ "中断メニューが開いて、「続ける」「別のゲームをあそぶ」
+"
+			+ "「退出する」を選べます。",
+			["OK"], func(_idx): _launch_game())
+		return
+
 	var game: GameInfo = _games[_selected_index]
 	# 起動シーケンス開始を先に宣言 (演出中も is_running=true にして、カルーセル更新が
 	# modulate を戻してフェードアウトを打ち消すのを防ぐ)。
