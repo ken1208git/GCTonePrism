@@ -60,14 +60,10 @@ func cleanup_for_quit() -> void:
 		_overlay.cleanup_for_quit()
 
 
-## INFO ログ出力。Godot 4 の built-in Logger クラスと名前衝突するため autoload を /root/Logger 経由で参照する
-## (直接 Logger.info() は呼べない、#85 まで Launcher 全体の移行は保留だが新規ファイルは本経路を使う)。
+## INFO ログ出力。解決は LogBridge に集約した (同じ /root/Logger 参照を各所に書き写すと、
+## 「Logger は呼べない」という誤解ごとコピーされて広がるため)。
 func _log(message: String) -> void:
-	var logger := get_node_or_null("/root/Logger")
-	if logger and logger.has_method("info"):
-		logger.info(message)
-	else:
-		print(message)
+	LogBridge.info(message)
 
 
 ## 意図的な操作であればアイドルタイマーをリセットする。overlay 側が入力を消費 (set_input_as_handled)
@@ -81,18 +77,16 @@ func notify_activity(event: InputEvent) -> void:
 
 
 ## 操作者の意図的な入力か (スティックドリフト/微小ノイズを無視する)。
+## 判定本体は InputIntent に移した — 無操作タイマーを持つ画面が増えるたびに書き写されると、
+## 新しい画面がまた素朴に「何か来たらリセット」と書いてドリフトで固まる (アンケート画面で実際に起きた)。
+##
+## **純粋な抽出ではなく、挙動が 1 点変わっている**: 旧実装はマウス移動を無条件に意図的入力として
+## 扱っていたが、共有後は 1px 超のみになった (`InputIntent.MOUSE_MOTION_THRESHOLD`)。したがって
+## 机の振動程度の微小な移動ではサービスモードの 60 秒オートクローズがリセットされなくなり、
+## **わずかに閉じやすくなる**。スタッフが操作していれば必ず 1px を超えるので実害は無いと判断したが、
+## 「移した」だけでは挙動同一に読めるので明記しておく。
 func _is_intentional_input(event: InputEvent) -> bool:
-	if event is InputEventKey:
-		return event.pressed and not event.echo
-	if event is InputEventMouseButton:
-		return event.pressed
-	if event is InputEventJoypadButton:
-		return event.pressed
-	if event is InputEventMouseMotion:
-		return true  # マウス移動は操作者がいる証拠
-	if event is InputEventJoypadMotion:
-		return absf(event.axis_value) > 0.5  # スティックのドリフト/ノイズを無視
-	return false
+	return InputIntent.is_intentional(event)
 
 
 func toggle() -> void:

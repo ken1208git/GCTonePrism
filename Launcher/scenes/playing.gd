@@ -155,12 +155,44 @@ func _on_game_quit_aborted() -> void:
 ## ゲーム終了 (GameSession.game_exited) → 選択画面へ復帰。
 ## 復帰時に直前ゲームへフォーカスを戻すため initial_game_id を設定 (filtered_games は AppState に残存)。
 func _on_game_exited() -> void:
-	# 退出メニュー選択時はスクリーンセーバーへ。それ以外 (続行終了/ホーム/自然終了) は選択画面へ。
-	if GameSession.should_exit_to_screensaver():
-		IdleManager.transition_to_screensaver(get_tree())
+	# (#35) アンケートを挟んでから遷移する。本シーンに来ている = PLAYING が確定した後なので、
+	# 「実際に遊んだ」ことが保証されている (起動に失敗して落ちた場合は game_selection 側で処理され、
+	# ここには来ない = 遊んでいない人に「たのしかった？」と聞かずに済む)。
+	# 背面に本シーンが残ったままダイアログが重なるので、そのゲームの背景画像と大きなサムネイルが
+	# 見えている状態で聞ける = どのゲームの評価かを取り違えさせない。
+	#
+	# **ゲームを 1 本遊び終えた時点で必ず個別アンケートを出す** (退出するかどうかに関わらず)。
+	# ここがそのゲームの評価を聞ける唯一のタイミングで、退出を選んだというだけで取り逃すのは損失が
+	# 大きい (退出はよくある終わり方)。退出ならその後に全体アンケートを続けて出す。2 つ並ぶが、
+	# 来場者はもう帰るところで、どちらも 1 タップでスキップできる。
+	var game := _game
+	var leaving := GameSession.should_exit_to_screensaver()
+	# (レビュー M-2) 試遊は同期に読む (`game_session.gd` が emit 後に false へ戻すため)。
+	# 現状の試遊はサービスモードのオーバーレイ上で完結し本シーンには来ないが、経路が増えたときに
+	# 静かに偽レコードが混ざるより、ここで明示的に弾いておく方が安い (プレイ記録側と同じ扱い)。
+	if GameSession.test_session:
+		if leaving:
+			IdleManager.transition_to_screensaver(get_tree())
+		else:
+			_return_to_selection(game)
 		return
-	if _game != null:
-		AppState.initial_game_id = _game.game_id
+	SurveyFlow.maybe_show_game_end(game, func():
+		if not leaving:
+			_return_to_selection(game)
+			return
+		# 全体アンケートに移る前にサムネを隠す。背面にゲームのサムネが残ったままだと
+		# 「今日は楽しめましたか？」がそのゲームへの質問に見えてしまう (取り違え防止の裏返し)。
+		if _thumb_panel:
+			_thumb_panel.visible = false
+		SurveyFlow.maybe_show_launcher_end(func(): IdleManager.transition_to_screensaver(get_tree()))
+	)
+
+
+## アンケート終了後 (または非表示時) の選択画面への復帰。
+## 復帰時に直前ゲームへフォーカスを戻すため initial_game_id を設定 (filtered_games は AppState に残存)。
+func _return_to_selection(game: GameInfo) -> void:
+	if game != null:
+		AppState.initial_game_id = game.game_id
 	# トランジション無しで瞬時に game_selection へ。game_selection 側が起動中画面と同じ
 	# running-view 静止状態 (プレイ中表示・背景 1.05) を再現し、起動モーションの逆再生
 	# (switch_to_normal_view: 背景ズームアウト + カルーセルフェードイン) でカルーセルへ戻る。

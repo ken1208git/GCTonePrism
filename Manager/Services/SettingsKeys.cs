@@ -177,5 +177,28 @@ namespace TonePrism.Manager.Services
         /// ゲーム追加の transaction と別 transaction になり atomic 性が崩れる)。
         /// </summary>
         public const string GameNoSeq = "game_no_seq";
+
+        // ----- (#35 / #297 PR3) アンケートの表示可否 -----
+
+        /// <summary>
+        /// (#35) ゲーム終了時のゲーム個別アンケートを表示するか ("true" / "false"、既定 true)。
+        ///
+        /// SPEC §機能10 の「スキップ可能」は per-instance の断り方で、プロンプト自体は出る = 摩擦が残る。
+        /// 本トグルは**プロンプトを出さない**ためのもので、ピーク時に最大効率で回したい場面のために用意する。
+        /// 個別アンケートは**毎ゲーム = 高頻度**なので、退出時の全体アンケートとは別に切れるようにしている
+        /// (摩擦の質が違うため。<see cref="SurveyLauncherEndEnabled"/> 参照)。
+        ///
+        /// **Launcher はこの値を表示直前に毎回読む** (キャッシュしない)。起動時に読んでキャッシュすると
+        /// 各キオスクを再起動するまで反映されず (#263)、「今すぐ止めたい」という本トグルの存在理由が消える。
+        /// 展示中に全台を再起動して回るのは運用上ありえないため。
+        /// </summary>
+        public const string SurveyGameEndEnabled = "survey_game_end_enabled";
+
+        /// <summary>
+        /// (#35) 退出時の全体アンケートを表示するか ("true" / "false"、既定 true)。
+        /// 退出時 1 回のみ = 低頻度なので、高頻度な <see cref="SurveyGameEndEnabled"/> とは独立に切れる。
+        /// 反映タイミングは同上 (表示直前に毎回読む)。
+        /// </summary>
+        public const string SurveyLauncherEndEnabled = "survey_launcher_end_enabled";
     }
 }

@@ -123,6 +123,43 @@
             </Border>
 
             <!-- ===== 情報・メンテナンス ===== -->
+            <TextBlock Text="アンケート" FontWeight="SemiBold" Margin="2,18,0,4" />
+            <!-- セクション全体への説明。**スイッチより前**に置く: 見出し → 何が起きるか → 操作 の順に
+                 読ませたい (下に置くと、切り替えた後で初めて挙動を知ることになる)。カード (Border) の
+                 外に出しているのは、中に入れると直前の 1 項目だけへの補足に見えるため。 -->
+            <TextBlock Text="切り替えるとランチャーにすぐ反映されます (再起動は不要です)。回答は自動で保存されます。集めた回答を見る画面は準備中です。"
+                       Opacity="0.6" FontSize="12" Margin="2,0,4,8" TextWrapping="Wrap" />
+            <!-- ゲーム終了時アンケート (先頭=上だけ丸) -->
+            <Border Style="{StaticResource GroupItem}" CornerRadius="8,8,0,0" Margin="0,0,0,3">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                        <TextBlock Text="ゲーム終了時のアンケート" FontWeight="SemiBold" />
+                        <TextBlock Text="ゲームを遊び終えるたびに、面白さを聞く画面を出します。混雑時はここでオフにできます。" Opacity="0.6" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <ui:ToggleSwitch x:Name="SurveyGameEndToggle" Grid.Column="1" VerticalAlignment="Center"
+                                     Checked="SurveyGameEnd_Changed" Unchecked="SurveyGameEnd_Changed" />
+                </Grid>
+            </Border>
+            <!-- 退出時アンケート (末尾=下だけ丸) -->
+            <Border Style="{StaticResource GroupItem}" CornerRadius="0,0,8,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                        <TextBlock Text="退出時のアンケート" FontWeight="SemiBold" />
+                        <TextBlock Text="来場者が席を離れるときに、全体の満足度を聞く画面を出します。" Opacity="0.6" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <ui:ToggleSwitch x:Name="SurveyLauncherEndToggle" Grid.Column="1" VerticalAlignment="Center"
+                                     Checked="SurveyLauncherEnd_Changed" Unchecked="SurveyLauncherEnd_Changed" />
+                </Grid>
+            </Border>
+
             <TextBlock Text="情報・メンテナンス" FontWeight="SemiBold" Margin="2,18,0,8" />
             <!-- バージョン情報 (読取専用・先頭=上だけ丸) -->
             <Border Style="{StaticResource GroupItem}" CornerRadius="8,8,0,0" Margin="0,0,0,3">
