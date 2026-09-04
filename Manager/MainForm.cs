@@ -327,16 +327,25 @@ namespace TonePrism.Manager
         }
 
         /// <summary>
-        /// (#449 診断) 物理表示の確定点。`ShowShellAsMain` が `MainForm_Load` の内側で呼ぶ `Hide()` が
-        /// 効いていれば**発火しない**ので、このログの有無だけで「Hide が Load 境界を越えて維持されるか」
-        /// が決まる。**結論が出たら削除してよい。**
+        /// (#449 診断) 物理表示の確定点。判定材料は「`Hide()` を通過した後に発火したか」。
+        ///
+        /// **(レビュー C-1) 発火 = 「Hide は維持されなかった」ではない。** `Hide()` に到達しない／
+        /// 到達前に `Show()` する経路が 3 つあり、そこでも発火する:
+        /// (1) 起動時セッション競合ゲート (`MakeMainFormVisible`、**本 PR が追加した経路**)、
+        /// (2) シェル生成失敗の `FallbackToVisibleMainForm`、(3) DB 未初期化で `Opacity=1` のまま Load を抜ける。
+        /// したがって `HidePassed=` を併記し、**`HidePassed=True` で発火した場合だけ**が
+        /// 「Hide が Load 境界を越えなかった」の証拠になる。判定は #458。**結論が出たら削除してよい。**
         /// </summary>
+        /// <summary>(#449 診断) `ShowShellAsMain` の `Hide()` を通過したか。#458 で削除。</summary>
+        private bool _hidePassed;
+
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
             try
             {
-                Logger.Info("[MainForm] (#449 診断) OnShown 発火 (= Hide は維持されなかった): Visible=" + Visible
+                Logger.Info("[MainForm] (#449 診断) OnShown 発火: HidePassed=" + _hidePassed
+                    + " (True で発火したときだけ「Hide が維持されなかった」の証拠) Visible=" + Visible
                     + " IsWindowVisible=" + (IsHandleCreated && NativeVisibility.IsWindowVisible(Handle))
                     + " Opacity=" + Opacity + " ShowInTaskbar=" + ShowInTaskbar);
             }
@@ -883,6 +892,7 @@ namespace TonePrism.Manager
                 shellShown = true;
                 Shell.SplashScreenHost.Close(); // (#246) スプラッシュを閉じる
                 Hide(); // Load 完了済なので Hide で安全に裏方化 (= MainForm の窓・タスクバーボタンを消す)
+                _hidePassed = true;   // (#449 診断 / レビュー C-1) OnShown の判定材料
                 // (レビュー M-3) **Opacity も戻す。** 起動時競合ゲートは MakeMainFormVisible で
                 // Opacity=1 にするが、そのままだと「Hide が Load 境界を越えず post-Load に再表示される」
                 // 場合に**未初期化の旧 UI がシェルと並んで完全に見える**二重 UI になる (本 PR 前は
@@ -897,17 +907,7 @@ namespace TonePrism.Manager
                 // 再表示されるなら MainForm はタスクバーに残り、SPEC §3.8.2.1 の「起動後は Hide 済み」
                 // という前提と、H-1 の深刻度説明を訂正する必要がある。
                 // **結論が出たらこのログは削除してよい。**
-                // (#449 診断) `Hide()` が `MainForm_Load` の境界を越えて維持されるかを実機で確定する。
-                // レビューでは複製アプリ 6 構成すべてで「post-Load に再表示される」と実測され、
-                // こちらの計測とは逆の結果になった。複製では決着しないので実アプリで測る。
-                //
-                // **判定は `OnShown` の発火有無で行う (レビュー 5b)。** `Shown` は**物理表示の確定点**
-                // なので、`Hide()` が効いていれば発火しない = 発火の有無そのものが答えになる。
-                // 旧実装は `BeginInvoke` + `_loadReturned` フラグだったが、`_loadReturned` は
-                // `OnLoad` から戻った時点で立つ一方 `SetVisibleCore` はその後に `ShowWindow` を呼ぶため、
-                // 「Load 完了後だが物理表示前」の窓が残り、早発火を閉じ切れていなかった。
-                //
-                // **結論が出たらこの 2 本のログは削除してよい。**
+                // (#449 診断) 判定の本体は OnShown 側 (docstring 参照)。ここは補助情報。#458 で削除。
                 try
                 {
                     Logger.Info("[MainForm] (#449 診断) Hide 直後: Visible=" + Visible
@@ -952,7 +952,10 @@ namespace TonePrism.Manager
                 //
                 // (レビュー 4) **ただし Show 成功後の失敗では消さない。** 消すとシェルが見えているのに
                 // 参照だけ失われ、状態が割れる (上の shellShown のコメント参照)。
-                if (!shellShown) { try { Shell.ShellWindow.Instance = null; } catch { } }
+                // (レビュー C-5) `_shell` も対で掃除する。同じオブジェクトへの参照が 2 本あるのに
+                // 片方だけ null 化すると、UpdateStatusBar / ShowBackupProgress 等が「表示されていない
+                // シェル」に書き続ける (実害はステータス更新の空振りだが、M-3 対応の趣旨と矛盾する)。
+                if (!shellShown) { try { Shell.ShellWindow.Instance = null; _shell = null; } catch { } }
                 FallbackToVisibleMainForm(null);
             }
         }
@@ -1108,18 +1111,32 @@ namespace TonePrism.Manager
             Form active = Form.ActiveForm;
             bool activeIsUsableModal = active != null && active != this && !active.IsDisposed
                 && active.IsHandleCreated && active.Modal
-                && NativeVisibility.IsWindowVisible(active.Handle);
+                && NativeVisibility.IsWindowVisible(active.Handle)
+                // (レビュー B-4) **条件 1 (タスクバーから辿れる) を実際に検査する。**
+                // 「この経路で active になるのは可視シェルに owned されたフォームだけ」は呼出し文脈への
+                // 依存で、呼出しが 1 箇所増えれば無言で破れる。しかも `ShowInTaskbar=false` の Form は
+                // すでに 3 つ存在する (UnsavedSettingsDialog / RestoreReportForm / ImageNameConflictDialog)
+                // ので「将来の話」ではない。自身がタスクバーに出ているか、owner 連鎖の根が可視かを見る。
+                && (active.ShowInTaskbar || NativeVisibility.IsRootOwnerVisible(active.Handle));
             if (activeIsUsableModal && !(active is ProcessingDialog))
             {
                 return active;
             }
             if (activeIsUsableModal)
             {
-                // (レビュー M-2) **除外した active モーダルがあるなら、シェルに落とさず null を返す。**
-                // ProcessingDialog は `ShowDialog(owner = シェル)` されうるので、その時点でシェルは
-                // 既に `EnableWindow(false)`。そこへシェルを owner とする MessageBox を出して閉じると、
-                // 破棄時の `EnableWindow(true)` でシェルが再有効化され、**step [0] が防ごうとしていた
-                // 再入が別経路で開く**。owner を諦める方が、無効化されている窓を owner にするより安全。
+                // **シェルには落とさない。** ProcessingDialog は `ShowDialog(owner = シェル)` されうるので、
+                // その時点でシェルは既に `EnableWindow(false)`。そこへシェルを owner とする MessageBox を
+                // 出して閉じると、破棄時の `EnableWindow(true)` でシェルが再有効化され、step [0] が
+                // 防ごうとしていた再入が別経路で開く (レビュー M-2)。
+                //
+                // **ただし `null` を返しても除外は達成できていない (レビュー B-1、未解決)。**
+                // `null` は「owner なし」ではなく `GetActiveWindow()` であり、この状況で active なのは
+                // まさにその ProcessingDialog なので、**除外したはずの窓が owner に戻る**。
+                // 上の「自分で閉じる窓を owner にしない」は、**現状ではシェルを避ける効果しか無い。**
+                //
+                // 正しく塞ぐには「自己クローズするモーダルの上に、その完了で消えては困る確認を
+                // 出さない」側で解く必要がある (= ProcessingDialog を閉じないか、確認を出さないか)。
+                // owner の選び方では解けないので #461 に分離した。**ここに防護があると読まないこと。**
                 return null;
             }
 
@@ -1160,6 +1177,25 @@ namespace TonePrism.Manager
             [System.Runtime.InteropServices.DllImport("user32.dll")]
             [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
             internal static extern bool IsWindowVisible(IntPtr hWnd);
+
+            [System.Runtime.InteropServices.DllImport("user32.dll")]
+            private static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
+
+            private const uint GA_ROOTOWNER = 3;
+
+            /// <summary>
+            /// (レビュー B-4) owner 連鎖の根 (`GA_ROOTOWNER`) が物理表示されているか。
+            /// タスクバーは `GetLastActivePopup` で根から所有モーダルへ辿るので、根が見えていれば戻せる。
+            /// </summary>
+            internal static bool IsRootOwnerVisible(IntPtr hWnd)
+            {
+                try
+                {
+                    IntPtr root = GetAncestor(hWnd, GA_ROOTOWNER);
+                    return root != IntPtr.Zero && root != hWnd && IsWindowVisible(root);
+                }
+                catch { return false; }
+            }
         }
 
         /// <summary>
